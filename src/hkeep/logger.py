@@ -98,3 +98,24 @@ def init_logger(logger:logging.Logger, formatter: Union[logging.Formatter, None]
 		_log.info(f"instantiated logger '{logger.name}'")
 	else:
 		_log.info(f"instantiated parent logger '{logger.name}'")
+
+
+class VersionFilter(logging.Filter):
+	'''
+	class manipulates every LogRecord with additional attribute
+	_version to contain current main version, if set through
+	classmethod set_version()
+	'''
+
+	_version = "unset"
+
+
+	@classmethod
+	def set_version(cls, ver:str) -> None:
+		cls._version = ver
+
+
+	def filter(self, record:logging.LogRecord):
+		record._version = self.__class__._version
+
+		return True

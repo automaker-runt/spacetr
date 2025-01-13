@@ -38,6 +38,6 @@ def load(fp:str) -> tuple:
 		return (False, {})
 
 	else:
-		_log.info(f"loaded data of {fp}")
+		_log.info(f"loaded data from {fp}")
 
 		return (True, di)

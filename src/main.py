@@ -1,6 +1,8 @@
 
 # main
 
+__version__ = "v0.1.1"
+
 import __main__
 
 import time, queue, threading
@@ -27,14 +29,21 @@ def init_logger(q:queue.Queue):
 	formatter = logging.Formatter('[{asctime}] [{levelname:<5}] {name}: {message}', style='{')
 	logging.Formatter.converter = time.gmtime
 
-	# add Queue to logger as another Handler
-	
-	logger.setHandler(logger=log,
-					handler=logging.handlers.QueueHandler(q),
-					formatter=formatter)
-
 	# init logger with FileHandler
 	logger.init_logger(log, formatter=formatter)
+
+	# create VersionFilter and set version
+	logger.VersionFilter.set_version(__version__)
+	verFilter = logger.VersionFilter()
+
+	# create QueueHandler and add verFilter to it
+	queHandler = logging.handlers.QueueHandler(q)
+	queHandler.addFilter(verFilter)
+
+	# add Queue to logger as another Handler
+	logger.setHandler(logger=log,
+					handler=queHandler,
+					formatter=formatter)
 
 	print(log.name, log.level, log.handlers)
 
@@ -62,6 +71,10 @@ def main():
 
 	print(Config.config)
 	log.info("shutting down")
+
+	while not sQ.empty():
+		rec = sQ.get()
+		print(f"{rec._version+' ' if hasattr(rec, "_version") else 'no attr '}{rec.getMessage()}")
 
 
 if __name__ == "__main__":

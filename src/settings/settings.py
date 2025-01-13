@@ -1,6 +1,7 @@
 # settings
 
 import os
+from typing import Union
 from fsys.folderinit.folder import Folder
 from fsys.io import jsonf
 from fsys import create
@@ -59,9 +60,9 @@ class Config:
 		return True
 
 
-	def update(self, it: Union[dict, list, tuple]) -> None:
+	def update(self, iterable: Union[dict, list, tuple]) -> None:
 
-		self.config.update(it)
+		self.config.update(iterable)
 
 
 	def load_default_config(self) -> dict:
