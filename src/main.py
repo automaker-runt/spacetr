@@ -1,22 +1,21 @@
 
 # main
 
-__version__ = "v0.1.1"
-
 import __main__
 
-import time, queue, threading
+import time, queue
+import threading
 import logging, logging.handlers
 
+from version import __version__
 from fsys import *
+from handlers import *
 from hkeep import *
 from netw import *
-from utils import *
 from settings import *
+from utils import *
 
 
-# instantiate version keeper, include in log startup
-# need possibility to track version through logging messages
 # need to have pipeline for logging Handler to directly go to SQL and INSERT
 
 
@@ -30,7 +29,7 @@ def init_logger(q:queue.Queue):
 	logging.Formatter.converter = time.gmtime
 
 	# init logger with FileHandler
-	logger.init_logger(log, formatter=formatter)
+	logger.init_logger(log, formatter=formatter, loglvl=20)
 
 	# create VersionFilter and set version
 	logger.VersionFilter.set_version(__version__)
@@ -45,16 +44,22 @@ def init_logger(q:queue.Queue):
 					handler=queHandler,
 					formatter=formatter)
 
-	print(log.name, log.level, log.handlers)
+	log.info(f"started {__version__}")
 
 	log.debug("test start debug msg")
-	log.info("test start info msg")
+	log.debug(f"{log.name}, {log.level}, {log.handlers}")
 
 
 def init_settings():
 	global Config
 
 	Config = settings.Config()
+	Config.config = settings.Config.load_default_config()
+
+
+def shutdown():
+	Config.save()
+	log.info("shutting down")
 
 
 def main():
@@ -70,7 +75,8 @@ def main():
 	init_settings()
 
 	print(Config.config)
-	log.info("shutting down")
+
+	shutdown()
 
 	while not sQ.empty():
 		rec = sQ.get()

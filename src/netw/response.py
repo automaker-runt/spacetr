@@ -1,22 +1,26 @@
 # Response
 
+import requests, httpx, time
 
+from version import __version__
 from hkeep.logger import get_logger
 from utils.os_type import OS
+from settings.settings import Config
 
 # import sqlhandle for connect
 # Settings need to be implemented
-# Settings version needs to be implemented maybe through in the formatter extra=d
 
-class Response(Inherit):
+Config = Config()
+
+class Response:
 
 	log = get_logger(__name__)
 
 	sql_table = None
 	session = requests.Session()
-	session._session_id = f"{OS[0]}{Settings.VERSION}_req1_{int(time.time())}"
+	session._session_id = f"{OS[0]}{__version__}_req1_{int(time.time())}"
 	cl_session = httpx.Client()
-	cl_session._session_id = f"{OS[0]}{Settings.VERSION}_hpx1_{int(time.time())}"
+	cl_session._session_id = f"{OS[0]}{__version__}_hpx1_{int(time.time())}"
 
 	if OS == "Linux":
 		session.headers = Settings.DEFAULT_SESSION_HEADERS_LINUX.copy()
@@ -56,7 +60,7 @@ class Response(Inherit):
 	def reset_sess(cls) -> None:
 		session = requests.Session()
 		session_number = int(cls.session._session_id.split("_")[1][3:])
-		session._session_id = f"{OS[0]}{Settings.VERSION}_req{session_number+1}_{int(time.time())}"
+		session._session_id = f"{OS[0]}{__version__}_req{session_number+1}_{int(time.time())}"
 		
 		if OS == "Linux":
 			session.headers = Settings.DEFAULT_SESSION_HEADERS_LINUX.copy()
@@ -70,7 +74,7 @@ class Response(Inherit):
 	def reset_cl_sess(cls) -> None:
 		cl_session = httpx.Client()
 		cl_session_number = int(cls.cl_session._session_id.split("_")[1][3:])
-		cl_session._session_id = f"{OS[0]}{Settings.VERSION}_hpx{cl_session_number+1}_{int(time.time())}"
+		cl_session._session_id = f"{OS[0]}{__version__}_hpx{cl_session_number+1}_{int(time.time())}"
 		
 		if OS == "Linux":
 			cl_session.headers = Settings.DEFAULT_SESSION_HEADERS_LINUX.copy()

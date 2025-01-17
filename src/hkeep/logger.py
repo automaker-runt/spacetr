@@ -2,6 +2,7 @@
 
 import logging, os, time
 from typing import Union
+
 from fsys.folderinit.folder import Folder
 from hkeep.error import tb
 
@@ -78,15 +79,22 @@ def get_Format() -> logging.Formatter:
 	return formatter
 
 
-def init_logger(logger:logging.Logger, formatter: Union[logging.Formatter, None]=None) -> None:
+def init_logger(logger:logging.Logger,
+				formatter: Union[logging.Formatter, None]=None,
+				loglvl:int=20,
+				fileHandlffp:str=None) -> None:
 	# build formatter
 	if formatter is None or not isinstance(formatter, logging.Formatter):
 		formatter = get_Format()
 
 	# build handler and set formatter, logging level to it, then add the handler to logger
-	main_log_handler = logging.FileHandler(filename=f'{os.path.abspath(Folder.os_proj_folderpath)}/log_UTC.txt', encoding='utf-8', mode='a')
+	if fileHandlffp is None:	
+		main_log_handler = logging.FileHandler(filename=f'{os.path.abspath(Folder.os_proj_folderpath)}/log_UTC.txt', encoding='utf-8', mode='a')
+	else:
+		main_log_handler = logging.FileHandler(filename=fileHandlffp, encoding='utf-8', mode='a')
+
 	main_log_handler.setFormatter(formatter)
-	logger.setLevel(logging.INFO)
+	logger.setLevel(loglvl)
 	logger.addHandler(main_log_handler)
 
 	# get own logger to log action
