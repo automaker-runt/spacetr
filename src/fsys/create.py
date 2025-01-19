@@ -2,7 +2,7 @@
 
 import logging, os
 from hkeep.error import tb
-from hkeep.logger import get_logger
+from hkeep.log.logger import get_logger
 
 
 def file(fp:str) -> bool:

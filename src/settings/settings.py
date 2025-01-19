@@ -5,7 +5,7 @@ from typing import Union
 from fsys.folderinit.folder import Folder
 from fsys.io import jsonf
 from fsys import create
-from hkeep.logger import get_logger
+from hkeep.log.logger import get_logger
 from utils.strings.shorten import short
 
 

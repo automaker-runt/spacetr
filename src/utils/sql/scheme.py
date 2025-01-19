@@ -5,9 +5,11 @@ the columns/foreign keys with other tables' keys
 '''
 from typing import Union
 
+from fsys.io.strf import load
 from hkeep.error import tb
-from hkeep.logger import get_logger
+from hkeep.log.logger import get_logger
 from utils.sql.schema import Schema
+from utils.strings.shorten import short
 
 
 class Scheme:
@@ -15,15 +17,24 @@ class Scheme:
 	_log = get_logger(__name__)
 
 
-	def __init__(self, tables:set) -> None:
+	def __init__(self, tables:set=set(), importerfp:str=str()) -> None:
+		# filter for wrong initializations
 		if not isinstance(tables, set):
 			raise Exception('init of Scheme with tables:set invalid type')
+		
+		elif len(tables) == 0 and len(importerfp) == 0:
+			raise Exception('init of Scheme with no tables and no importerfp')
 
+		
 		self.tables = tables
 		self.dependancies = {
 								"unknown_foreign_of": list()
 							}
 		self.schemes = dict()
+
+		if len(importerfp) > 0:
+			self.importer(importerfp)
+			self.finalize()
 
 
 	def add_table(self, schema:Union[Schema, None]=None, table:str='') -> bool:
@@ -132,6 +143,28 @@ class Scheme:
 
 			# raise	
 			raise Exception(f'schema foreign key "{key}" references "{value}", but the referenced table has been processed without said column "{ref_col}')
+
+
+	def importer(self, fp:str) -> None:
+		re, raw_str = load(fp)
+
+		if not re:
+			self.__class__._log.error(f"failed loading multiple schema from {fp}")
+
+			return
+
+		# schemas need to be divided by '\n\n' in file
+		# aka at least one empty line between them
+		li_schema = raw_str.split('\n\n')
+
+		for item in li_schema:
+			schema = Schema(item.strip())
+			if not self.add_schema(schema):
+				self.__class__._log.error(f"failed loading schema from {schema.raw_schema}")
+
+				return
+
+		self.__class__._log.info(f"loaded multiple schema from {short(fp)}")
 
 
 	def finalize(self, log_true=True) -> bool:

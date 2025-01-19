@@ -2,7 +2,8 @@
 
 import logging, os, time
 from hkeep.error import tb
-from hkeep.logger import get_logger
+from hkeep.log.logger import get_logger
+from utils.strings.shorten import short
 
 
 def save(stringy:str, fp:str, attempt:int=0, max_tries:int=5, active_log=True) -> bool:
@@ -32,7 +33,7 @@ def save(stringy:str, fp:str, attempt:int=0, max_tries:int=5, active_log=True) -
 
 		else:
 			if active_log:
-				_log.warning(f"not able to save into {fp}; {tb(E)}")
+				_log.warning(f"not able to save into {short(fp)}; {tb(E)}")
 
 			time.sleep(1)
 
@@ -40,3 +41,21 @@ def save(stringy:str, fp:str, attempt:int=0, max_tries:int=5, active_log=True) -
 
 	else:
 		return True
+
+
+def load(fp:str) -> tuple:
+
+	_log = get_logger(__name__)
+	raw_str = str()
+
+	try:	
+		with open(fp, "r") as f1:
+			raw_str = f1.read()
+
+	except Exception as E:
+		_log.error(f"not able to load {fp}; {tb(E)}")
+
+		return (False, raw_str)		
+
+	else:
+		return (True, raw_str)

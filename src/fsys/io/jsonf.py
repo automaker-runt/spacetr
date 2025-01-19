@@ -4,7 +4,7 @@ import json
 from typing import Union
 from fsys.io import strf
 from hkeep.error import tb
-from hkeep.logger import get_logger
+from hkeep.log.logger import get_logger
 
 
 def save(di:dict, fp:str, indent:int=4) -> bool:
