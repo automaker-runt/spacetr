@@ -14,7 +14,7 @@ def save(di:dict, fp:str, indent:int=4) -> bool:
 	_log = get_logger(__name__)
 
 	if strf.save(s1, fp):
-		_log.info(f"saved {short(fp)}")
+		_log.debug(f"saved {short(fp)}")
 
 		return True
 
@@ -39,6 +39,6 @@ def load(fp:str) -> tuple:
 		return (False, {})
 
 	else:
-		_log.info(f"loaded data from {short(fp)}")
+		_log.debug(f"loaded data from {short(fp)}")
 
 		return (True, di)

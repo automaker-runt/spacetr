@@ -58,16 +58,14 @@ class SqlHand:
 		else:
 			self.deformatter = dict()
 
-		# TODO decide whether to have always an open DB connection
-		# or open and close it, or choosing which from both to do
-		# on instance basis		
+		# TODO create framework for open connections
+		# 1. main: the one that writes INSERT and UPDATE through SqlHand Obj
+		# 2. possible second writeable conn for any thread that wants to write
+		# x. readonly conn(s), that are being used to SELECT
 
 
 	def ins(self, table:str, inp: Union[list, str]) -> bool:
 		
-		# TODO
-		# decide whether to use constant for version
-
 		multiple_ins = False
 		# check inp for type and structure (multiple lines or just one?)
 		if isinstance(inp, list):
@@ -123,6 +121,7 @@ class SqlHand:
 		column_order = self.scheme.schemes[table].columns
 
 		if not multiple_ins:
+
 			return self._ins_one(table, inp, column_order)
 
 		else:
@@ -350,6 +349,7 @@ class SqlHand:
 				re_snippet = f" resulting in {len(re)} lines, 1st one: {shortb(re[0])}" if len(re) > 0 else ""
 				self.__class__._log.debug(f"executed sql command '{com}'{com_var_tup_str}{re_snippet}")
 
+			# TODO put this one in ins and only commit when no error occured on the way, else rollback
 			self.conn.commit()
 
 			# make sure re is a list, even empty, but has to be list
@@ -444,6 +444,7 @@ class SqlHand:
 		for line in sql_outp:
 			
 			# TODO integrate field width and ljust into the Formatter class intialization
+			
 			# misc intervention so we can replace loglvl with a ljust loglvl
 			if "loglvl" in identifier_order:
 				line = adjust_sql_sel_outp_loglvl(line, identifier_order)
@@ -516,6 +517,12 @@ class SqlHand:
 			conn.close()
 
 
+		except sqlite3.ProgrammingError as PE:
+			if "SQLite objects created in a thread can only be used in that same thread." in str(PE):
+				self.__class__._log.warning(tb(PE))
+			else:
+				raise PE
+
 		except Exception as E:
 			if force:
 				conn.interrupt()
@@ -546,5 +553,20 @@ class SqlHand:
 	def __del__(self):
 		self.__class__._log.debug(f"deleting SqlHand obj and closing DB {short(self.dbfp)}")
 
-		if not self.close_db(self.conn):
-			self.close_db(self.conn, force=True)
+		if isinstance(self.conn, bool) and self.conn:
+			return
+		
+		try:	
+			if not self.close_db(self.conn):
+				self.close_db(self.conn, force=True)
+
+		except sqlite3.ProgrammingError as PE:
+			# maybe it happened because of DB already closed
+			if "Cannot operate on a closed database." in str(PE):
+				self.__class__._log.warning(tb(PE))
+
+			else:
+				raise PE
+
+		else:
+			self.__class__._log.warning(f"attempted closing DB through __del__ function")

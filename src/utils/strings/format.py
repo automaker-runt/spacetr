@@ -8,7 +8,7 @@ from hkeep.log.logger import get_logger
 
 class Formatter:
 
-	# TODO integrate field width and ljust into the Formatter class intialization
+	# TODO integrate field width and ljust into the Formatter class intialization, could also use the .format standard to declare a template
 
 	_log = get_logger(__name__)
 

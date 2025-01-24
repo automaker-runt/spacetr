@@ -1,6 +1,6 @@
 # logger
 
-import logging, os, time
+import logging, os, time, sys
 from typing import Union
 
 from fsys.folderinit.folder import Folder
@@ -93,9 +93,23 @@ def init_logger(logger:logging.Logger,
 	else:
 		main_log_handler = logging.FileHandler(filename=fileHandlffp, encoding='utf-8', mode='a')
 
+	report_handler = logger.handlers.copy()
+
 	main_log_handler.setFormatter(formatter)
 	logger.setLevel(loglvl)
 	logger.addHandler(main_log_handler)
+
+	# there was a handler already added before adding FileHandler
+	if len(report_handler) == 1:
+		# create record only for FileHandler
+		rec = logging.LogRecord(name="spacetr."+__name__,
+								level=20,
+								pathname=os.path.dirname(__file__)+"/"+__name__,
+								msg=f"logHandler already present {report_handler[0]}",
+								lineno=sys._getframe().f_lineno,
+								args=tuple(),
+								exc_info=tuple())
+		main_log_handler.handle(rec)
 
 	# get own logger to log action
 	_log = get_logger(__name__)

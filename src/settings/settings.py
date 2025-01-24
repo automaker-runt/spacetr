@@ -34,7 +34,7 @@ class Config:
 		if os.stat(f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json").st_size >= 9:
 			re, settings = jsonf.load(f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json")
 
-			if re:	
+			if re:
 				_log.info(f"loaded settings from {short(settings["path_config"])}")
 
 			assert re, "not loading config"
@@ -98,7 +98,8 @@ class Config:
 															'Upgrade-Insecure-Requests': '1',
 															'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
 															},
-						"path_config": f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json"
+						"path_config": f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json",
+						"ExitThreadSignal": "//exit"
 		}
 
 		return settings
