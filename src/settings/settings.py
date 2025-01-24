@@ -35,7 +35,7 @@ class Config:
 			re, settings = jsonf.load(f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json")
 
 			if re:	
-				_log.info(f"loaded settings from {settings["path_config"]}")
+				_log.info(f"loaded settings from {short(settings["path_config"])}")
 
 			assert re, "not loading config"
 
@@ -57,7 +57,7 @@ class Config:
 
 		# save config
 		if jsonf.save(self.config, self.config["path_config"]):	
-			_log.info(f"saved settings to {self.config["path_config"]}")
+			_log.info(f"saved settings to {short(self.config["path_config"])}")
 
 			return True
 

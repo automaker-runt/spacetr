@@ -10,8 +10,9 @@ special functions to use with logger in more individual way
 def adjust_sql_sel_outp_loglvl(tup:tuple, mapper:dict) -> list:
 	# transform tuple into list
 	line = list(tup)
-	# so we can replace loglvl with a lfjust loglvl
-	line[mapper["loglvl"]] = line[mapper["loglvl"]].ljust(5)
+	if line[mapper["loglvl"]] is not None:
+		# so we can replace loglvl with a lfjust loglvl
+		line[mapper["loglvl"]] = line[mapper["loglvl"]].ljust(5)
 
 	return line
 

@@ -17,6 +17,16 @@ class Scheme:
 	_log = get_logger(__name__)
 
 
+	@classmethod
+	def _col_redact_from_table(cls, col:str) -> str:
+		# get rid of potential "<table>." in <table>.<column>
+		# as column name
+		# redact col in case it already has a '.' in it
+		_col = col[col.find('.'):] if col.find('.') != -1 else col
+
+		return _col
+
+
 	def __init__(self, tables:set=set(), importerfp:str=str()) -> None:
 		# filter for wrong initializations
 		if not isinstance(tables, set):
@@ -26,6 +36,7 @@ class Scheme:
 			raise Exception('init of Scheme with no tables and no importerfp')
 
 		
+		self.finalized = False
 		self.tables = tables
 		self.dependancies = {
 								"unknown_foreign_of": list()
@@ -90,7 +101,7 @@ class Scheme:
 
 				# detect foreign keys to implement in dependancies
 				if line_w[0].upper() == "FOREIGN":
-					self.__class__._log.debug(f"running schemes.update with {schema.table, schema}")
+					self.__class__._log.debug(f"updating self.dependancies table {schema.table} with foreign key {line}")
 					self._apply_schema_foreign_dependancy(schema.table, line_w)
 
 				# detect column searched lines by unknown dependancies 
@@ -164,7 +175,7 @@ class Scheme:
 
 				return
 
-		self.__class__._log.info(f"loaded multiple schema from {short(fp)}")
+		self.__class__._log.info(f"imported multiple schema from {short(fp)}")
 
 
 	def finalize(self, log_true=True) -> bool:
@@ -190,6 +201,8 @@ class Scheme:
 					if log_true:
 						l_depend = len(self.dependancies.keys())-1
 						self.__class__._log.info(f"Scheme obj finalized with {len(self.tables)} schemes and {l_depend} dependanc{'ies' if l_depend != 1 else 'y'}")
+
+					self.finalized = True
 
 					return True
 

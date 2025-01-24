@@ -31,7 +31,7 @@ class Folder():
 						folder_files.append(item)
 					# filter for files that are too short, don't have .py or
 					# are the __init__.py file
-					elif any([len(item) <= 3, item[-3:] != ".py", item == "__init__.py"]):
+					elif len(item) <= 3 or item[-3:] != ".py" or item == "__init__.py":
 						continue
 					else:
 						folder_files.append(item[:-3])

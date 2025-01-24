@@ -8,6 +8,8 @@ from hkeep.log.logger import get_logger
 
 class Formatter:
 
+	# TODO integrate field width and ljust into the Formatter class intialization
+
 	_log = get_logger(__name__)
 
 
@@ -30,3 +32,57 @@ class Formatter:
 
 		else:
 			return s
+
+
+class DeFormatter:
+	# deformats logging messages into their parts for sql insert
+
+	_log = get_logger(__name__)
+
+	def __init__(self, preset:dict=dict()) -> None:
+		self.preset = preset
+
+
+	def apply(self, inp:str, preset:bool=True) -> list:
+		# check for inp type
+		start = 22
+
+		if not isinstance(inp, str):
+			self.__class__._log.error(f"apply inp is not of str type, rejecting '{inp}'")
+
+			raise Exception(f"TypeError apply inp is not of str type, rejecting '{inp}'")
+
+		if len(inp) == 0:
+			self.__class__._log.error(f"apply inp is empty str, rejecting '{inp}'")
+
+			raise Exception(f"ValueError apply inp is empty str, rejecting '{inp}'")
+
+		if len(inp) <= start+1:
+			self.__class__._log.error(f"apply inp is too small str, rejecting '{inp}'")
+
+			raise Exception(f"ValueError apply inp is too small str, rejecting '{inp}'")
+
+		# do magic of deformatting
+
+		# first needs to get index of log message from the third ":", which is
+		# right after the logger, then we can split first three elements
+		third = inp[start:].find(":")+start
+
+		# split first three elements: time_UTC, loglvl, logger
+		# also get rid of "[" & "]" & and blank space " " by doing so
+		outp = [i.strip().strip("[") for i in inp[:third].split("]") if len(i.strip()) > 0]
+
+		# strip last element msg
+		last = [inp[third+1:].strip()]
+
+		# strip splitted logger and msg
+		outp.extend(last)
+
+		# apply preset if needed
+		if preset:
+			# need to sort to prevent incresing indexes of inserted presets
+			for indx in sorted(list(self.preset.keys())):
+				outp.insert(int(indx), self.preset[indx])
+
+		return outp
+
