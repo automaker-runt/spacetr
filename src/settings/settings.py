@@ -20,22 +20,22 @@ class Config:
 
 		_log = get_logger(__name__)
 
-		if not "config.json" in Folder.get_folder_content(os.path.abspath(Folder.os_proj_folderpath)):
+		if not "config.json" in Folder.get_folder_content(os.path.abspath(Folder.os_projver_folderpath)):
 			# create config.json
 			# then load default config and save it
 
-			if create.file(f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json"):
-				_log.info(f"Created 'config.json' in {short(os.path.abspath(Folder.os_proj_folderpath))}")
+			if create.file(f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json"):
+				_log.info(f"Created 'config.json' in {short(os.path.abspath(Folder.os_projver_folderpath))}")
 
 			else:
-				_log.error(f"Couldn't create 'config.json' in {os.path.abspath(Folder.os_proj_folderpath)}")
+				_log.error(f"Couldn't create 'config.json' in {os.path.abspath(Folder.os_projver_folderpath)}")
 
 
-		if os.stat(f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json").st_size >= 9:
-			re, settings = jsonf.load(f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json")
+		if os.stat(f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json").st_size >= 9:
+			re, settings = jsonf.load(f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json")
 
 			if re:
-				_log.info(f"loaded settings from {short(settings["path_config"])}")
+				_log.info(f'loaded settings from {short(settings["path_config"])}')
 
 			assert re, "not loading config"
 
@@ -57,7 +57,7 @@ class Config:
 
 		# save config
 		if jsonf.save(self.config, self.config["path_config"]):	
-			_log.info(f"saved settings to {short(self.config["path_config"])}")
+			_log.info(f'saved settings to {short(self.config["path_config"])}')
 
 			return True
 
@@ -73,7 +73,43 @@ class Config:
 	@classmethod
 	def load_default_config(cls) -> dict:
 		settings = {
+						"DEFAULT_SESSION_MAX_ATTEMPT_LIB": 2,
+						"DEFAULT_SESSION_MAX_ATTEMPT_SESS": 2,
+						
+						# "DEFAULT_SESSION_HEADERS_LINUX": {
+						# 									'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+						# 									'Accept-Encoding': 'gzip, deflate, br',
+						# 									'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+						# 									'Priority': 'u=0, i',
+						# 									'Connection': 'keep-alive',
+						# 									'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126"',
+						# 									'Sec-Ch-Ua-Platform': 'Linux',
+						# 									'Sec-Fetch-Dest': 'document',
+						# 									'Sec-Fetch-Mode': 'navigate',
+						# 									'Sec-Fetch-Site': 'same-origin',
+						# 									'Upgrade-Insecure-Requests': '1',
+						# 									'User-Agent': 'python requests/httpx'
+						# 									},
+
+
 						"DEFAULT_SESSION_HEADERS_LINUX": {
+															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+															'Accept-Encoding': 'gzip, deflate, br',
+															'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+															'Priority': 'u=0, i',
+															'Connection': 'keep-alive',
+															'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126"',
+															'Sec-Ch-Ua-Platform': 'Linux',
+															'Sec-Fetch-Dest': 'document',
+															'Sec-Fetch-Mode': 'navigate',
+															'Sec-Fetch-Site': 'same-origin',
+															'Upgrade-Insecure-Requests': '1',
+															'User-Agent': 'python-httpx/0.28.1'		# 'python-requests/2.31.0'
+															},
+
+															#{'User-Agent': 'python-requests/2.31.0', 'Accept-Encoding': 'gzip, deflate, br', 'Accept': '*/*', 'Connection': 'keep-alive'}
+
+						"DEFAULT_SESSION_HEADERS_LINUX_PRIV": {
 															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
 															'Accept-Encoding': 'gzip, deflate, br, zstd',
 															'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
@@ -96,9 +132,20 @@ class Config:
 															'Sec-Fetch-Mode': 'navigate',
 															'Sec-Fetch-Site': 'same-origin',
 															'Upgrade-Insecure-Requests': '1',
+															'User-Agent': 'python requests/httpx'
+															},
+						"DEFAULT_SESSION_HEADERS_WIN_PRIV": {
+															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+															'Accept-Encoding': 'gzip, deflate, br',
+															'Accept-Language': 'en-US,en;q=0.5',
+															'Connection': 'keep-alive',
+															'Sec-Fetch-Dest': 'document',
+															'Sec-Fetch-Mode': 'navigate',
+															'Sec-Fetch-Site': 'same-origin',
+															'Upgrade-Insecure-Requests': '1',
 															'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
 															},
-						"path_config": f"{os.path.abspath(Folder.os_proj_folderpath)}/config.json",
+						"path_config": f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json",
 						"ExitThreadSignal": "//exit"
 		}
 

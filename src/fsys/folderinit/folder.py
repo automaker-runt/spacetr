@@ -3,8 +3,8 @@ import os
 
 class Folder():
 
-	os_projver_folderpath = os.path.dirname(__file__)+"/../.."
-	os_proj_folderpath = os.path.dirname(__file__)+"/../../.."
+	os_projver_folderpath = os.path.dirname(__file__)+"/../../.."
+	os_proj_folderpath = os.path.dirname(__file__)+"/../../../.."
 	src = os.path.dirname(__file__)+"/"
 
 	@classmethod

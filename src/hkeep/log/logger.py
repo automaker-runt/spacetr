@@ -59,6 +59,40 @@ def setHandler(logger:logging.Logger,
 	_log = get_logger(__name__)
 
 	try:
+		#handler.setFormatter(formatter)
+		logger.addHandler(handler)
+
+	except Exception as E:
+		_log.error(tb(E))
+		return False
+
+	else:
+		_log.info(f"set new handler of type '{type(handler)}' to logger '{logger.name}'")
+		return True
+
+
+def setNetmsgHandler(logger:logging.Logger,
+					handler:logging.Handler
+				) -> bool:
+		
+	def netmsgPassFilter(record:logging.LogRecord) -> bool:
+		if record.levelno in [19]:
+			return True
+
+		else:
+			return False
+
+
+	_log = get_logger(__name__)
+	formatter = logging.Formatter('[{asctime}] [{levelname:<5}] {name}: {message}', style='{')	
+
+	# create blank filter for network traffic
+	netmsgFil = logging.Filter()
+	# pass own filter method to Fil.filter
+	netmsgFil.filter = netmsgPassFilter
+
+	try:
+		handler.addFilter(netmsgFil)
 		handler.setFormatter(formatter)
 		logger.addHandler(handler)
 
@@ -82,25 +116,31 @@ def get_Format() -> logging.Formatter:
 def init_logger(logger:logging.Logger,
 				formatter: Union[logging.Formatter, None]=None,
 				loglvl:int=20,
-				fileHandlffp:str=None) -> None:
+				fileHandlffp:str=None,
+				filters:list=list()) -> None:
+	
 	# build formatter
 	if formatter is None or not isinstance(formatter, logging.Formatter):
 		formatter = get_Format()
 
 	# build handler and set formatter, logging level to it, then add the handler to logger
 	if fileHandlffp is None:	
-		main_log_handler = logging.FileHandler(filename=f'{os.path.abspath(Folder.os_proj_folderpath)}/log_UTC.txt', encoding='utf-8', mode='a')
+		main_log_handler = logging.FileHandler(filename=f'{os.path.abspath(Folder.os_projver_folderpath)}/log_UTC2.txt', encoding='utf-8', mode='a')
 	else:
 		main_log_handler = logging.FileHandler(filename=fileHandlffp, encoding='utf-8', mode='a')
 
 	report_handler = logger.handlers.copy()
+
+	# add filters to main_log_handler
+	for fil in filters:	
+		main_log_handler.addFilter(fil)
 
 	main_log_handler.setFormatter(formatter)
 	logger.setLevel(loglvl)
 	logger.addHandler(main_log_handler)
 
 	# there was a handler already added before adding FileHandler
-	if len(report_handler) == 1:
+	if len(report_handler) == 1 and loglvl <= 20:
 		# create record only for FileHandler
 		rec = logging.LogRecord(name="spacetr."+__name__,
 								level=20,
@@ -122,6 +162,57 @@ def init_logger(logger:logging.Logger,
 		_log.info(f"instantiated parent logger '{logger.name}'")
 
 
+def addLoggingLevel(levelName, levelNum, methodName=None):
+    # from https://stackoverflow.com/questions/2183233/how-to-add-a-custom-loglevel-to-pythons-logging-facility/35804945#35804945 [20250128]
+    """
+    Comprehensively adds a new logging level to the `logging` module and the
+    currently configured logging class.
+
+    `levelName` becomes an attribute of the `logging` module with the value
+    `levelNum`. `methodName` becomes a convenience method for both `logging`
+    itself and the class returned by `logging.getLoggerClass()` (usually just
+    `logging.Logger`). If `methodName` is not specified, `levelName.lower()` is
+    used.
+
+    To avoid accidental clobberings of existing attributes, this method will
+    raise an `AttributeError` if the level name is already an attribute of the
+    `logging` module or if the method name is already present 
+
+    Example
+    -------
+    >>> addLoggingLevel('TRACE', logging.DEBUG - 5)
+    >>> logging.getLogger(__name__).setLevel("TRACE")
+    >>> logging.getLogger(__name__).trace('that worked')
+    >>> logging.trace('so did this')
+    >>> logging.TRACE
+    5
+
+    """
+    if not methodName:
+        methodName = levelName.lower()
+
+    if hasattr(logging, levelName):
+       raise AttributeError('{} already defined in logging module'.format(levelName))
+    if hasattr(logging, methodName):
+       raise AttributeError('{} already defined in logging module'.format(methodName))
+    if hasattr(logging.getLoggerClass(), methodName):
+       raise AttributeError('{} already defined in logger class'.format(methodName))
+
+    # This method was inspired by the answers to Stack Overflow post
+    # http://stackoverflow.com/q/2183233/2988730, especially
+    # http://stackoverflow.com/a/13638084/2988730
+    def logForLevel(self, message, *args, **kwargs):
+        if self.isEnabledFor(levelNum):
+            self._log(levelNum, message, args, **kwargs)
+    def logToRoot(message, *args, **kwargs):
+        logging.log(levelNum, message, *args, **kwargs)
+
+    logging.addLevelName(levelNum, levelName)
+    setattr(logging, levelName, levelNum)
+    setattr(logging.getLoggerClass(), methodName, logForLevel)
+    setattr(logging, methodName, logToRoot)
+
+
 class VersionFilter(logging.Filter):
 	'''
 	class manipulates every LogRecord with additional attribute
@@ -137,7 +228,7 @@ class VersionFilter(logging.Filter):
 		cls._version = ver
 
 
-	def filter(self, record:logging.LogRecord):
+	def filter(self, record:logging.LogRecord) -> bool:
 		record._version = self.__class__._version
 
 		return True

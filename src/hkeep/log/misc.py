@@ -28,3 +28,4 @@ def adjust_sql_sel_outp_col_order(sql_outp_col_order:list) -> list:
 	# sql_outp_col_order[sql_outp_col_order.index("log.id")] = "id"
 
 	return sql_outp_col_order
+

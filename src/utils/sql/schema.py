@@ -15,8 +15,8 @@ class Schema:
 
 			self.raw_schema = inp
 			self.columns = list()
+			self.table = inp.split('\n')[0].split()[-1][:-1]
 			self.schema = self.conv_schema(inp)
-			self.table = self.schema[0].split()[-1][:-1]
 
 		except Exception as E:
 			self.__class__._log.error(tb(E))
@@ -34,7 +34,7 @@ class Schema:
 
 			if not first.lower() in ('create', 'foreign') and not ',' in first and not ')' in first:
 			#if all([not first.lower() in {'create', 'foreign'}, not any([',' in first, ')' in first])]):
-				self.columns.append(first)
+				self.columns.append(f"{first}")
 
 			outp.append(line.strip())
 

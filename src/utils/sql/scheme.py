@@ -12,7 +12,7 @@ from utils.sql.schema import Schema
 from utils.strings.shorten import short
 
 
-class Scheme:
+class Schemers:
 
 	_log = get_logger(__name__)
 
@@ -27,17 +27,20 @@ class Scheme:
 		return _col
 
 
-	def __init__(self, tables:set=set(), importerfp:str=str()) -> None:
+	def __init__(self, tables: Union[set, None]=None, importerfp:str=str()) -> None:
 		# filter for wrong initializations
-		if not isinstance(tables, set):
+		if not isinstance(tables, set) and tables is not None:
 			raise Exception('init of Scheme with tables:set invalid type')
 		
-		elif len(tables) == 0 and len(importerfp) == 0:
+		elif ((tables is None or (isinstance(tables, set) and len(tables) == 0)) and
+			len(importerfp) == 0):
 			raise Exception('init of Scheme with no tables and no importerfp')
 
 		
 		self.finalized = False
-		self.tables = tables
+		# tables needs to become set() here, not in parameter declaration, since there every new
+		# Schemers Obj will then get the same default tables as the first Schemers Obj of that main session 
+		self.tables = tables if isinstance(tables, set) else set()
 		self.dependancies = {
 								"unknown_foreign_of": list()
 							}
@@ -192,7 +195,7 @@ class Scheme:
 				# first condition is valid
 				# now also check if there are no unknown in self.dependancies
 				if len(self.dependancies["unknown_foreign_of"]) > 0:
-					self.__class__._log.warning(f"can't finalize, Scheme obj still has unfound dependancy pairs: {self.dependancies["unknown_foreign_of"]}")
+					self.__class__._log.warning(f'can\'t finalize, Scheme obj still has unfound dependancy pairs: {self.dependancies["unknown_foreign_of"]}')
 
 					return False
 
@@ -212,7 +215,10 @@ class Scheme:
 				return False
 
 		else:
-			self.__class__._log.warning(f"can't finalize, provided Scheme obj with different amount of tables than schemes")
-			self.__class__._log.debug(f"{self.tables} vs {list(self.schemes.keys())}")
+			# need to transform self.tables into sorted list, so DB doesn't insert a new msg every time due
+			# to the randomness of set()
+			log_tables = sorted(list(self.tables))
+			self.__class__._log.warning(f"can't finalize, provided Scheme obj with different amount of tables than schemes: {log_tables} vs {list(self.schemes.keys())}")
+			self.__class__._log.debug(f"{log_tables} vs {list(self.schemes.keys())}")
 
 			return False

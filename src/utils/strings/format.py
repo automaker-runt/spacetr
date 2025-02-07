@@ -43,7 +43,34 @@ class DeFormatter:
 		self.preset = preset
 
 
-	def apply(self, inp:str, preset:bool=True) -> list:
+	def apply(self, inp:list, apl_preset:bool=True) -> list:
+		# check for inp type
+
+		if not isinstance(inp, list):
+			self.__class__._log.error(f"apply inp is not of list type, rejecting type '{type(inp)}'")
+
+			raise Exception(f"TypeError apply inp is not of list type, rejecting type '{type(inp)}'")
+
+		if len(inp) == 0:
+			self.__class__._log.error(f"apply inp is empty list, rejecting '{inp}'")
+
+			raise Exception(f"ValueError apply inp is empty list, rejecting '{inp}'")
+
+		# apply self.preset if apl_preset
+		return self.apply_preset(inp) if apl_preset else inp
+
+
+	def apply_preset(self, inp:list) -> list:
+		# need to sort to prevent incresing indexes of inserted presets
+		for indx in sorted(list(self.preset.keys())):
+			inp.insert(int(indx), self.preset[indx])
+
+		return inp
+
+
+class DeFormatterLog(DeFormatter):
+
+	def apply(self, inp:str, apl_preset:bool=True) -> list:
 		# check for inp type
 		start = 22
 
@@ -78,11 +105,5 @@ class DeFormatter:
 		# strip splitted logger and msg
 		outp.extend(last)
 
-		# apply preset if needed
-		if preset:
-			# need to sort to prevent incresing indexes of inserted presets
-			for indx in sorted(list(self.preset.keys())):
-				outp.insert(int(indx), self.preset[indx])
-
-		return outp
-
+		# apply self.preset if apl_preset
+		return self.apply_preset(outp) if apl_preset else outp

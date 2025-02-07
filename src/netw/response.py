@@ -1,243 +1,294 @@
-# Response
+# response
+#import requests, httpx 			maybe we don't need, maybe we need for exception handling?
+import time
+import xxhash, requests, httpx
+from typing import Union
 
-import requests, httpx, time
+from hkeep.error import tb
+from hkeep.log.logger import get_logger
+from netw.request import Request
+from utils.time import wait
+from utils.strings.host import getHost
+from utils.strings.response import _log_helper_valid, _log_helper_valid_error
+from utils.strings.xxhash import hash, getHash
 
-from version import __version__
-from hkeep.logger import get_logger
-from utils.os_type import OS
-from settings.settings import Config
-
-# import sqlhandle for connect
-# Settings need to be implemented
-
-Config = Config()
 
 class Response:
 
-	log = get_logger(__name__)
-
-	sql_table = None
-	session = requests.Session()
-	session._session_id = f"{OS[0]}{__version__}_req1_{int(time.time())}"
-	cl_session = httpx.Client()
-	cl_session._session_id = f"{OS[0]}{__version__}_hpx1_{int(time.time())}"
-
-	if OS == "Linux":
-		session.headers = Settings.DEFAULT_SESSION_HEADERS_LINUX.copy()
-		cl_session.headers = session.headers.copy()
-	else:
-		session.headers = Settings.DEFAULT_SESSION_HEADERS_WIN.copy()
-		cl_session.headers = session.headers.copy()
-	
-
-	@classmethod
-	def get(cls, url:str, _printer:bool=False, btfsoup:bool=False, session:bool=False, timeout=(7, 3), protocol:str="req") -> requests.Response:
-		start = int(time.time()*1000)
-		# filter for valid protocol
-		if not protocol.lower() in {"req", "hpx"}:
-			raise Exception(f"Error Response.get parameter protocol is not supported: '{protocol}'")
-
-		if session:
-			if protocol == "req":	
-				response = cls(Request.req("get", url, protocol=protocol, _printer=_printer, session=cls.session, timeout=timeout), _printer=_printer, btfsoup=btfsoup)			
-			elif protocol == "hpx":
-				response = cls(Request.req("get", url, protocol=protocol, _printer=_printer, session=cls.cl_session, timeout=timeout), _printer=_printer, btfsoup=btfsoup)			
-
-		else:
-			response = cls(Request.req("get", url, protocol=protocol, _printer=_printer, timeout=timeout), _printer=_printer, btfsoup=btfsoup)
-			#response = Response(Request.req("get", url, _printer=_printer, session=False), _printer=_printer, btfsoup=btfsoup)
-
-		if hasattr(response.response, "_past_resp") and len(response.response._past_resp) > 0:
-			if _printer:	
-				cls.log.info(f"Response acquired with {len(response.response._past_resp)+1} attempts and took {int(response.response._total_ti_ms/1000)}s")
-
-			print(f"{int(time.time()*1000)} Response acquired with {len(response.response._past_resp)+1} attempts in total {int(response.response._total_ti_ms/1000)}s\n{list(str(i.text)[:200 if len(str(i.text)) > 1000 else len(str(i.text))] for i in response.response._past_resp)}", file=sys.stderr)
-
-		return response
-
-	
-	@classmethod
-	def reset_sess(cls) -> None:
-		session = requests.Session()
-		session_number = int(cls.session._session_id.split("_")[1][3:])
-		session._session_id = f"{OS[0]}{__version__}_req{session_number+1}_{int(time.time())}"
-		
-		if OS == "Linux":
-			session.headers = Settings.DEFAULT_SESSION_HEADERS_LINUX.copy()
-		else:
-			session.headers = Settings.DEFAULT_SESSION_HEADERS_WIN.copy()
-		
-		cls.session.close()
-		cls.session = session
+	_log = get_logger(__name__)
+	timeout_until = 0
 
 
-	def reset_cl_sess(cls) -> None:
-		cl_session = httpx.Client()
-		cl_session_number = int(cls.cl_session._session_id.split("_")[1][3:])
-		cl_session._session_id = f"{OS[0]}{__version__}_hpx{cl_session_number+1}_{int(time.time())}"
-		
-		if OS == "Linux":
-			cl_session.headers = Settings.DEFAULT_SESSION_HEADERS_LINUX.copy()
-		else:
-			cl_session.headers = Settings.DEFAULT_SESSION_HEADERS_WIN.copy()
-		
-		cls.cl_session.close()
-		cls.cl_session = cl_session
+	def __init__(self,
+						mode:str,
+						url:str,
+						Session: Union[requests.Session, httpx.Client, None]=None,
+						data:dict=dict(),
+						lib:str="req",
+						private:bool=False,
+						cookies: Union[dict, requests.cookies.RequestsCookieJar]=dict()
+				):
+		self.url = url
+		self.Session = Session
+		self.mode = mode
+		self.data = data
+		self.invalid_reason = None
+		self.lib = lib
+		self.attempts = 1
+		self.private = private
+		self.cookies = cookies
+		self._respID = None
+		self._respID = getHash(self._form_atrib_dict())
 
+		# decide which instance to use from
+		# Session, requests, httpx
+		self._set_getter_instance(lib, by="__init__")
 
-	def __init__(self, response:requests.Response, _printer:bool=False, btfsoup:bool=False):
-		self._printer = _printer	# self._printer is the attribute and self.printer is the method
-		self.response = response
-		#print(type(response), response.status_code, len(response.text))
+		# now decide which mode to use and "concat" to instance/self.getter
+		if self.mode == "get":
+			# other stuff
 
-		try:
-			json.loads(self.response.text)
-		except Exception as E:
-			# error occured
-			self.jj = dict()
+			#self.getter = self.getter.get
+			self.get()
 
-			if btfsoup:
-				if self.check_satus_code():
-					if _printer:	
-						print(f"response processed, beautifullsoup indicated, .response.text set")
+		elif self.mode.split()[0] == "post":
+			# other stuff?
 
-				else:
-					self.check_error()
-			
-			else:
-				self.error = True
-				print(f"{int(time.time()*1000)} {E} during json serialization, status code is ({self.response.status_code}) response.text: ({self.response.text if len(self.response.text) < 400 else 'len above 400'}), url ({self.response.url})", file=sys.stderr)
-			
-		else:	
-			self.jj = response.json()
-
-			if self.check_satus_code():
-				if self._printer:	
-					self.printer()
-			else:
-				self.check_error()
-
-		finally:
-			self.response.close()
-			self.gen_jj()
-
-
-	def gen_jj(self):
-		pass
-
-
-	def check_error(self) -> None:
-		if self.error and not self._printer:
-			if getattr(self, "error_message", False) and getattr(self, "error_reason", False):
-				if self.error_reason != "Bogon IP error":	
-					print(f"{int(time.time()+1000)} {self.error_reason}, message: {self.error_message}, url ({self.response.url})", file=sys.stderr)
-			else:	
-				print(f"{int(time.time())} Response is marked with error, probably during request", file=sys.stderr)
-
-
-	def check_satus_code(self) -> bool:
-		if self.response.status_code != 200:
-			
-			if "error" in self.jj and "title" in self.jj["error"] and "message" in self.jj["error"]:
-
-				self.error_reason = self.jj["error"]["title"]
-				self.error_message = self.jj["error"]["message"]
+			# check if data provided
+			if len(self.data.keys()) == 0:
+				self.__class__._log.error("Response not given argument 'data'")
 				
-				if self._printer:	
-					print(f"Request failed with code {self.response.status_code}:")
-					print("\t", self.error_reason)
-					print("\t", self.error_message)
+				raise Exception("Response not given argument 'data'")
+
+			# data needs to be given
+			#self.getter = self.getter.post
+			self.get()
+
+		else:
+			self.__class__._log.error("Response given incorrect argument 'mode'")
+
+			raise Exception("Response given incorrect argument 'mode'")
 
 
-			else:
-				if self._printer:
-					self.printer(mode="Error")
+	def get(self, max_attempts:int=5):
 
-				self.error_reason = f"Unkown error"
-				self.error_message = f"status code {self.response.status_code}"
-			
-			self.error = True
+		# prepare headers
+		headers = dict()
+		headers.update({'host': getHost(self.url)})
+
+		# if Session is None
+		if self.Session is None:
+			headers.update({'Connection': 'close',
+							'Accept-Encoding': b'',
+							'Accept': '*/*'
+				})
+
+		while self.attempts == 1 or int(time.time()) < self.__class__.timeout_until:
+
+			# don't wait on first Request
+			if self.invalid_reason is not None:
+				# waiting until certain time, due to:
+				# - multiple timeouts
+				# - rate limited
+				wait(self.__class__.timeout_until, interval=1.04)
+
+			#print(self.Session.headers)
+
+			self.Response = Request(self.getter, self.url, data=self.data, headers=headers, jjs=self._form_atrib_dict()).run()
+
+			while not self.valid() and self.attempts < max_attempts:
+
+				# in case of error
+				if self.invalid_reason == "error":
+
+					break
+
+				# in case of timeout
+				if self.invalid_reason == "timeout":
+					self.__class__.timeout_until = int(time.time()) + 10
+					max_attempts += self.attempts
+					self.attempts += 1
+
+					break
+
+				# when we are rate limited, wait 3s
+				elif self.invalid_reason == "ratelimit":
+					self.__class__.timeout_until = int(time.time()) + 3
+					max_attempts += self.attempts
+					self.attempts += 1
+
+					break
+
+				elif self.invalid_reason == "server":
+					self.__class__._log.info(f"get got Response with invalid_reason 'lib' for the Session")
+					self.attempts += 1
+					self.Response = Request(self.getter, self.url, headers=headers, jjs=self._form_atrib_dict()).run()
+
+				elif self.invalid_reason == "lib":
+					if self.Session is not None:
+						# let session handle the invalid_reason == "lib"
+						self.__class__._log.info(f"get got Response with invalid_reason 'lib' for the Session")
+						
+						return
+
+					else:
+						# reset only once lib
+						if self.attempts == 1:	
+							next_lib = "hpx" if self.lib == "req" else "req"
+							
+							# reset the self.getter instance
+							if self._set_getter_instance(lib=next_lib, by="get while attempts=1"):
+								self.lib = next_lib
+							
+							self.attempts += 1
+							# need to add .get to getter, because mode hasn't been set
+							self.Response = Request(self.getter.get, self.url, headers=headers, jjs=self._form_atrib_dict()).run()
+
+						elif self.attempts < max_attempts:
+							self.attempts += 1
+							self.Response = Request(self.getter, self.url, headers=headers, jjs=self._form_atrib_dict()).run()
+
+						else:
+							# just return the Response
+							self.__class__._log.error(f"get failed to get valid Response in {self.attempts} attempts")
+
+							return
+
+				elif self.invalid_reason == "sess":
+					# let session handle the invalid_reason == "sess"
+					self.__class__._log.info(f"get got Response with invalid_reason 'sess'")
+						
+					return
+
+			if self.invalid_reason == "error" or max_attempts == self.attempts or self.valid():
+				break		
+
+		return self.Response
+
+
+	def post(self):
+		Resp = Request(self.getter, self.url, self.data)
+
+		self.Response = Resp
+
+
+	def valid(self) -> bool:
+
+		# checking for unknown errors happened in Request
+		if hasattr(self.Response, "Error"):
+			self.invalid_reason = "error"
+			self.__class__._log.error(_log_helper_valid_error(self, f"valid Error in Request, case"))
 
 			return False
 
-		else:
-			self.error = False
+		# need to check for Request timeout and max_tries exhausted
+		if hasattr(self.Response, "ReqTimeout"):
+			if self.Session is not None:
+				self.invalid_reason = "timeout"
+				self.__class__._log.warning(_log_helper_valid_error(self, f"valid Session is not None returns invalid_reason 'timeout', case"))
+
+			else:
+				self.invalid_reason = "timeout"
+				self.__class__._log.warning(_log_helper_valid_error(self, f"valid Session is None returns invalid_reason 'timeout', case"))
+
+			return False
+
+		# need to check http status_codes
+
+		# server error
+		if self.Response.status_code >= 500 and self.Response.status_code < 600:
+			self.invalid_reason = "server"
+			self.__class__._log.warning(_log_helper_valid(self, "valid code 500-599 returns invalid_reason 'server', case"))
+
+			return False
+
+		# forbidden status_code
+		elif self.Response.status_code >= 400 and self.Response.status_code < 500:
+
+			# rate limited
+			if self.Response.status_code == 429:
+				self.invalid_reason = "ratelimit"
+				self.__class__._log.warning("valid code 429 rate limit reached")
+
+				return False
+
+			# 405 method not allowed
+			elif self.Response.status_code == 405:
+				self.invalid_reason = "error"
+				self.__class__._log.error(_log_helper_valid(self, "valid Error code 405 method not allowed, case"))
+
+				return False
+
+			# if it is requests instance, should have reason
+			elif ((hasattr(self.Response, "reason") and "forbidden" in self.Response.reason.lower()) or
+				(hasattr(self.Response, "reason_phrase") and "forbidden" in self.Response.reason_phrase.lower()) or
+				self.Response.status_code == 403
+				):
+				if hasattr(self.Response, "reason_phrase"):
+					self.Response.reason = self.Response.reason_phrase
+
+				self.invalid_reason = "lib"
+				self.__class__._log.warning(_log_helper_valid(self, "valid code 400-499 & Session is not None returns invalid_reason 'lib', case"))
+
+				return False
+
+			# sessions
+			elif self.Session is not None:
+				self.invalid_reason = "sess"
+				self.__class__._log.warning(_log_helper_valid(self, "valid code 400-499 & Session is not None returns invalid_reason 'sess', case"))
+
+				return False
+
+			else:
+				# pre needs to have {} so hash can format the string and put there the hash
+				self.invalid_reason = "error"
+				pre = hash(">{}< valid code 400-499 & Session is not None unknown case")
+				self.__class__._log.error(_log_helper_valid(self, pre))
+
+				raise Exception(pre)
+
+		# success codes mapped to modes
+		elif ((self.mode == "get" and self.Response.status_code == 200) or
+				(self.mode.split()[0] == "post" and self.Response.status_code in (200, 201))
+			):
+			# if 200 OK, then self Obj is valid
 
 			return True
 
 
-	def procedure_write_sql(self, DB_fpath:str, max_tries=3, ignore_err:bool=False, excld_col:Union[list, tuple, set]=tuple()) -> bool:
-		tries = 0
-		# either ignore error and just exec_sql_INS()
-		# or dont ignore error and self.error needs to be False to execute exec_sql_INS()
-		if ignore_err or (not ignore_err and not self.error):
-			
-			while not self.exec_sql_INS(DB_fpath=DB_fpath, excld_col=excld_col):
-				time.sleep(5)
-				tries += 1
-				# default: if after 3 attempts it didn't work, quit
-				if tries >= max_tries:
-					break
+	def _set_getter_instance(self, lib:str, Session: Union[requests.Session, httpx.Client, None]=None, by:str='') -> bool:
+		# decide which instance to use from
+		# Session, requests, httpx
+		if Session is not None:
+			self.getter = self.Session
 
-			if tries >= max_tries:
-				return False
+		elif lib == "req":
+			self.getter = requests
 
-			else:
-				return True
+		elif lib == "hpx":
+			self.getter = httpx
 
 		else:
-			return False
+			self.__class__._log.error(f"_set_getter_instance given incorrect argument 'lib'{' '+by if len(by)>0 else by} ")
+
+			raise Exception(f"_set_getter_instance given incorrect argument 'lib'{' '+by if len(by)>0 else by} ")
+
+		return True
 
 
-	def sql_INS(self, table=None, appl_jj=None) -> str:
-		if table is None:
-			table = self.__class__.sql_table
+	def _form_atrib_dict(self) -> dict:
+		re_dict = {
+					"url": self.url,
+					"SID": 0 if self.Session is None else self.Session._SID,
+					"mode": self.mode,
+					"data": self.data,
+					"invalid_reason": self.invalid_reason,
+					"lib": self.lib,
+					"attempts": self.attempts,
+					"private": self.private,
+					"cookies": self.cookies,
+					"respID": self._respID
+					}
 
-		# set appl_jj if None
-		if appl_jj is None:
-			appl_jj = self.jj
+		return re_dict
 
-		if not hasattr(self, "_sql_INS"):
-			cols = str(tuple(appl_jj.keys())).replace("'", "")
-
-			re = f'''INSERT INTO {table} {cols} VALUES ({fill_sql_question_m(appl_jj)})'''
-
-			self._sql_INS = re
-
-		return self._sql_INS
-
-
-	def exec_sql_INS(self, DB_fpath:str, table=None, excld_col:Union[list, tuple, set]=tuple()) -> bool:
-		if table is None:
-			table = self.__class__.sql_table
-		
-		# filter columns if any in excld_col
-		appl_jj = self.jj.copy()
-		if len(excld_col) > 0:	
-			for col in excld_col:
-				if col in appl_jj.keys():	
-					appl_jj.pop(col)
-
-
-		conn = sh.connect(DB_fpath)
-		if conn is None:
-			return False
-
-		with conn:
-			try:	
-				conn.execute(self.sql_INS(table, appl_jj=appl_jj), tuple(appl_jj.values()))
-				conn.commit()
-
-			except Exception as sqlE:
-				self.__class__.log(f'Error {sqlE} trying to save API changelog query', int(time.time()*1000))
-				print(int(time.time()*1000), f"Error trying to execute ({self._sql_INS}) in ({DB_fpath}): {sqlE}", file=sys.stderr)
-
-				return False
-			
-			else:
-				return True
-
-
-	def printer(self, mode="Standard"):
-		print(f"{mode} Response printer")
-		print(json.dumps(self.jj, indent=4))
