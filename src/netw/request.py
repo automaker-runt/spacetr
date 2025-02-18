@@ -60,12 +60,12 @@ class Request:
 
 
 	@classmethod
-	def set_netmsg(cls, Q:queue.Queue) -> SqlHand:
+	def set_netmsg(cls, Q:queue.Queue, dbfp:str, scfp:str) -> SqlHand:
 		#cls.netmsg = logging.getLogger("netmsg")
 		cls.netmsg_Q = Q
-		netSchemer = Schemers(importerfp='/home/darkminosa/dev/spacetr/src/netw/scheme.ex')
+		netSchemer = Schemers(importerfp=scfp)
 
-		dbf = os.path.abspath(Folder.os_proj_folderpath+"/"+"test_netmsg.sqlite")
+		dbf = os.path.abspath(dbfp)
 
 		cls.netSH = SqlHand(netSchemer, dbf)
 
@@ -103,8 +103,9 @@ class Request:
 		self.jjs = jjs
 		
 		# headers according to private and OS
-		self.headers = headers 
-		if private or self.jjs["private"]:
+		self.headers = headers
+		# set default headers for private if no session
+		if self.jjs["SID"] == 0 and (private or self.jjs["private"]):
 			if OS == "Linux":
 				self.headers.update(self.__class__.priv_headers["DEFAULT_HEADERS_LINUX_PRIV"])
 			else:
@@ -159,6 +160,11 @@ class Request:
 				t1, t2 = self.timeout
 				self.timeout = tuple([t1+4, t2+4])
 			
+			if "Request URL is missing an" in str(Err):
+				setattr(Resp, "Error", 1)
+				del Resp.ReqTimeout
+				return Resp
+
 			return self.run(count+1) if count+1 <=max_count else Resp
 
 		except (requests.Timeout, httpx.TimeoutException) as TErr:
@@ -196,7 +202,7 @@ class Request:
 				temp = io.StringIO()
 				traceback.print_tb(E.__traceback__, limit=25, file=temp)
 				temp.seek(0)
-				self.__class__._log.error(f"run failed with unknown Exception, {tb(E)}\n{temp.getvalue()}")
+				self.__class__._log.critical(f"run failed with unknown Exception, {tb(E)}\n{temp.getvalue()}")
 				temp.close()
 
 				return Resp
@@ -239,8 +245,31 @@ class Request:
 
 			else:
 				# check in resp_body for key that has forms of "Trace-Id"
-				resp_body, resp_body_traceID = lose.keys(js_resp_body, ("Trace-Id", "traceid"))
+				resp_body, resp_body_traceID = lose.keys(js_resp_body, ("Trace-Id", "traceid", "trace-context"))
 
+			# set response headers as dict
+			if self.jjs["lib"] == "hpx":
+				resp_headers = multidicts.make_dict(Resp.headers)
+			else:
+				resp_headers = dict(Resp.headers)
+
+			# check in resp_headers for key that has forms of "Trace-Id" / "trace-context"
+			resp_headers, re_trace = lose.keys(resp_headers, ("Trace-Id", "traceid", "trace-context", "Etag"))
+
+			# if spacetraders.io
+			if "spacetraders.io" in self.url:	
+				# also lose the ratelimit reset time for the DB, keep it in Resp.headers for Response to use it
+				resp_headers, _ = lose.keys(json.loads(resp_headers), ("x-ratelimit-reset",))
+
+			# if trace in headers found, set/add to resp_body_traceID
+			if re_trace != 0:
+				if resp_body_traceID == 0:
+					resp_traceID = re_trace
+				else:
+					resp_traceID = [re_trace, resp_body_traceID]
+			# no trace in headers, set to whatever body had
+			else:
+				resp_traceID = resp_body_traceID
 
 			self.columns ={
 					"time_UTC": conv_time_time_to_def(start),
@@ -256,10 +285,10 @@ class Request:
 					"req_body": Resp.request.content.decode() if self.jjs["lib"] == "hpx" else str(Resp.request.body),
 					"status_code": Resp.status_code,
 					"resp_reason": Resp.reason_phrase if self.jjs["lib"] == "hpx" else Resp.reason,
-					"resp_headers": multidicts.make_dict(Resp.headers) if self.jjs["lib"] == "hpx" else Resp.headers,
+					"resp_headers": resp_headers,
 					"resp_body": resp_body,
-					"resp_body_traceID": resp_body_traceID,
-					"invalid_reason": self.jjs["invalid_reason"],
+					"resp_traceID": resp_traceID,
+					"invalid_reason": str(self.jjs["invalid_reason"]),
 					"resp_protocol": Resp.http_version if self.jjs["lib"] == "hpx" else f"HTTP/{Resp.raw.version/10}",
 					"lib": self.jjs["lib"],
 					"timeout": self.timeout,
@@ -287,8 +316,8 @@ class Request:
 					"resp_reason": 0,
 					"resp_headers": 0,
 					"resp_body": 0,
-					"resp_body_traceID": 0,
-					"invalid_reason": self.jjs["invalid_reason"],
+					"resp_traceID": 0,
+					"invalid_reason": str(self.jjs["invalid_reason"]),
 					"resp_protocol": 0,
 					"lib": self.jjs["lib"],
 					"timeout": self.timeout,

@@ -32,7 +32,7 @@ class Schema:
 		for line in inp.split('\n'):
 			first = line.split()[0]
 
-			if not first.lower() in ('create', 'foreign') and not ',' in first and not ')' in first:
+			if not first.lower() in ('create', 'foreign', 'primary') and not ',' in first and not ')' in first:
 			#if all([not first.lower() in {'create', 'foreign'}, not any([',' in first, ')' in first])]):
 				self.columns.append(f"{first}")
 

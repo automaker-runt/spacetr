@@ -1,6 +1,7 @@
 # sql handler
 import sqlite3
 import time
+from threading import get_ident
 from typing import Union
 
 from handler.conn import ConnectionHandler
@@ -13,6 +14,7 @@ from utils.sql.scheme import Schemers
 from utils.sql import strings
 from utils.strings.format import Formatter, DeFormatter
 from utils.strings.shorten import short, shortb
+from utils.strings.xxhash import hash
 
 
 class SqlHand:
@@ -30,7 +32,7 @@ class SqlHand:
 		# check for Scheme successfull finalization
 		if not Scheme.finalized and not Scheme.finalize():
 			self.Scheme = Schemers(tables=Scheme.tables)
-			self.__class__._log.warning(f"initialized SqlHand without finalized Schemers obj; self.Scheme.add_schema & self.Scheme.finalize & run self.init_scheme needed")
+			self.__class__._log.warning(f"initialized SqlHand without finalized Schemers obj; self.Scheme.add_schema & self.Scheme.finalize & run self.init_DB needed")
 		else:
 			self.Scheme = Scheme
 		
@@ -66,17 +68,18 @@ class SqlHand:
 
 		# check ConnHandler
 		if ConnHandler is None:
-			self.ConnHandler = ConnectionHandler()
+			self.ConnHandler = ConnectionHandler(self.dbfp)
 		elif isinstance(ConnHandler, ConnectionHandler):
 			self.ConnHandler = ConnHandler
 		else:
 			self.__class__._log.warning(f"initialized SqlHand with wrong type for ConnHandler: {type(ConnHandler)}")
-			self.ConnHandler = ConnectionHandler()
+			self.ConnHandler = ConnectionHandler(self.dbfp)
 
-		self.ConnHandler.add_conn(dbfp, open_conn=False)
+		self.journal_mode = None
+		self.ConnHandler._add_conn(open_conn=False, persist=True)
 
 
-	def ins(self, table:str, inp: Union[list, str], **entryargs) -> bool:
+	def ins(self, table:str, inp: Union[list, str], extras: Union[dict, None]=None, **entryargs) -> bool:
 		
 		multiple_ins = False
 		# check inp for type and structure (multiple lines or just one?)
@@ -102,7 +105,7 @@ class SqlHand:
 
 					# return False
 				
-			elif len(inp) > 1 and isinstance(inp[0], str):
+			elif len(inp) > 1 and isinstance(inp[0], Union[str, int]):
 				# a list with many strings giving values for one line
 				if table in self.deformatter:
 					inp = self.deformatter[table].apply(inp)
@@ -158,18 +161,18 @@ class SqlHand:
 
 		if not multiple_ins:
 
-			return self._ins_one(table, inp, column_order, **entryargs)
+			return self._ins_one(table, inp, column_order, extras=extras, **entryargs)
 
 		else:
 			result = True
 			for i in inp:
-				if not self._ins_one(table, i, column_order, **entryargs):
+				if not self._ins_one(table, i, column_order, extras=extras, **entryargs):
 					result = False
 
 			return result
 
 
-	def _ins_one(self, table:str, one:list, col_order:list, **entryargs) -> bool:
+	def _ins_one(self, table:str, one:list, col_order:list, extras: Union[dict, None]=None, **entryargs) -> bool:
 		Conn = self.get_conn(read_only=False)
 
 		if not Conn.open_status:
@@ -178,6 +181,10 @@ class SqlHand:
 			return False
 
 		if "id" in col_order:
+			# need copy, or else at second insert, column id is missing and
+			# throws over len(self.Scheme.schemes[ref_tbl].columns)
+			# since col_order references that here 
+			col_order = col_order.copy()
 			col_order.remove("id")
 
 		# have to process every column of the table for INSERT
@@ -195,12 +202,13 @@ class SqlHand:
 				# in specific table
 				# if value is in that table, grab the id and replace one[index]' value with id
 				# if it is not in there, INS, grab then id and replace one[index]' value with id
-				# do this for all dep_cols
+				# do this for all cols if in self.Scheme.dependancies
 
 				_indx = col_order.index(col)
 				if isinstance(one, list) and len(one) > _indx:
 					_val = one[_indx]
-					if any(not isinstance(_val, i) for i in (str, int)):
+					# if type in one is other than str/int make it be
+					if not isinstance(_val, Union[str, int, None]):
 						_val = str(_val)
 				else:
 					self.__class__._log.error(f"_ins_one one is either not a list or len of it is smaller than _indx")
@@ -211,42 +219,73 @@ class SqlHand:
 				ref_tbl_cl_comb = self.Scheme.dependancies[_tbl_cl_comb]
 				ref_tbl = ref_tbl_cl_comb[:ref_tbl_cl_comb.find('.')]
 				ref_cl_id = ref_tbl_cl_comb[ref_tbl_cl_comb.find('.')+1:]
-				ref_cl_val = f"{ref_tbl[1:]}"
+				ref_cl_name = f"{ref_tbl[1:]}"
 
-				com = f"SELECT id FROM {ref_tbl} WHERE {ref_cl_val}=?;"
+				com = f"SELECT id FROM {ref_tbl} WHERE {ref_cl_name}=?;"
 				com_var = (_val,)
 				
-				self.__class__._log.debug(f"_ins_one sel id from '{ref_tbl}' WHERE {ref_cl_val}={_val}")
+				self.__class__._log.debug(f"_ins_one sel id from '{ref_tbl}' WHERE {ref_cl_name}={_val}")
 				re = self.sel(com, com_var, _format=False, Conn=Conn)
 
 				# check for results, to know if _val already in there
 				if re is not None and len(re) > 0:
 					_id = re[0][0]
 					one[_indx] = _id
-					self.__class__._log.debug(f"_ins_one sel id from '{ref_tbl}' WHERE {ref_cl_val}={_val} returned id={_id}")
+					self.__class__._log.debug(f"_ins_one sel id from '{ref_tbl}' WHERE {ref_cl_name}={_val} returned id={_id}")
 
 				# if error occured re is None
 				elif re is None:
-					self.__class__._log.error(f"_ins_one value({_val}) lookup in '{ref_tbl}.{ref_cl_val}' returned None")
+					self.__class__._log.error(f"_ins_one value({_val}) lookup in '{ref_tbl}.{ref_cl_name}' returned None")
 					self.__class__._log.info(f"_ins_one self.Scheme.dependancies: {self.Scheme.dependancies}")
 
 					return False
 
 				# expect len to be 0, aka not in there
 				else:
-					self.__class__._log.debug(f"_ins_one sel from '{ref_tbl}' WHERE {ref_cl_val}={_val} returned len 0")
+					self.__class__._log.debug(f"_ins_one sel from '{ref_tbl}' WHERE {ref_cl_name}={_val} returned len 0")
 
-					re_ins = self.ins(ref_tbl, [_val])
-					self.__class__._log.debug(f"_ins_one insert into ref_tbl({ref_tbl}) {ref_cl_val}={_val} returned {re_ins}")
+					# need to check if ref_tbl has column "updated"
+					if "updated" in self.Scheme.schemes[ref_tbl].columns and len(self.Scheme.schemes[ref_tbl].columns) == 3:
+						re_ins = self.ins(ref_tbl, [_val, int(time.time())])
+					elif ("updated" in self.Scheme.schemes[ref_tbl].columns and 
+							len(self.Scheme.schemes[ref_tbl].columns) > 3):
+						# ref_tbl has more columns than ref_cl_name and "updated"
+							
+						original_columns = self.Scheme.schemes[ref_tbl].columns.copy()
+						if "id" in original_columns:
+							original_columns.pop(0)
+
+						if extras is not None and ref_tbl in extras: # condition to be able to do insert in ref_tbl with more than just 2 values _val and int(time.time())
+							
+							original_columns = original_columns[1:]
+							complete_vals = [_val]
+							complete_vals.extend([extras[ref_tbl][i] for i in original_columns])
+
+							re_ins = self.ins(ref_tbl, complete_vals)
+
+						else:
+							# do as last resort a reduced insert, leaving NULL values, through _ins_one by
+							# explicitly only giving _val for whatever the column name is and int(time.time()) for update column
+							min_columns = [original_columns[0], original_columns[-1]]
+
+							re_ins = self._ins_one(ref_tbl, [_val, int(time.time())], min_columns)
+							
+							if not re_ins:
+								self.__class__._log.critical(f"_ins_one failed insert into ref_tbl({ref_tbl}) {ref_cl_name}={_val} because ref_tbl needs {len(self.Scheme.schemes[ref_tbl].columns)-1} values and wasn't provided in extras argument")
+
+					else:
+						re_ins = self.ins(ref_tbl, [_val])
+						
+					self.__class__._log.debug(f"_ins_one insert into ref_tbl({ref_tbl}) {ref_cl_name}={_val} returned {re_ins}")
 
 					if re_ins:
-						self.__class__._log.debug(f"_ins_one insert into '{ref_tbl}' {ref_cl_val}={_val} successful")
+						self.__class__._log.debug(f"_ins_one insert into '{ref_tbl}' {ref_cl_name}={_val} successful")
 						# now need to grab id
 						re = self.sel(com, com_var, _format=False, Conn=Conn)
 
 						# re should have len and be list now
 						if re is None or len(re) == 0:
-							self.__class__._log.error(f"_ins_one sel from '{ref_tbl}' WHERE {ref_cl_val}={_val} returned NoneType or len 0 after specific insert")
+							self.__class__._log.error(f"_ins_one sel from '{ref_tbl}' WHERE {ref_cl_name}={_val} returned NoneType or len 0 after specific insert")
 
 							return False
 
@@ -254,10 +293,10 @@ class SqlHand:
 						else:
 							_id = re[0][0]
 							one[_indx] = _id
-							self.__class__._log.debug(f"_ins_one after ins sel id from '{ref_tbl}' WHERE {ref_cl_val}={_val} returned id={_id}")
+							self.__class__._log.debug(f"_ins_one after ins sel id from '{ref_tbl}' WHERE {ref_cl_name}={_val} returned id={_id}")
 						
 					else:
-						self.__class__._log.error(f"_ins_one failed insert into '{ref_tbl}' {ref_cl_val}={_val}")
+						self.__class__._log.error(f"_ins_one failed insert into '{ref_tbl}' {ref_cl_name}={_val}")
 
 						return False
 
@@ -265,11 +304,24 @@ class SqlHand:
 		# ids of the foreign keys
 
 		# normalize values, get where x=?, ... part
-		where, ins_dict = create.dict_sql_ins(table, col_order, one)
+		try:	
+			where, ins_dict = create.dict_sql_ins(col_order, one)
+		except Exception as E:
+			print(col_order)
+			print(one)
+			raise E
+
+		# make sure our table has id column:
+		if self._has_table_column(table, 'id', Conn):
+			sel_col = 'id'
+			re_sel_id = True
+		else:
+			sel_col = '*'
+			re_sel_id = False
 
 		# sel what we just want to insert, if it returns len > 0, we don't insert
-		re_id = self.sel(f"SELECT id FROM {table} WHERE {where};", tuple(ins_dict.values()), _format=False, Conn=Conn)
-		if len(re_id) == 0:			
+		re_sel = self.sel(f"SELECT {sel_col} FROM {table} WHERE {where};", tuple(ins_dict.values()), _format=False, Conn=Conn)
+		if len(re_sel) == 0:			
 
 			com = strings.get_str_sql_ins(table, ins_dict)
 
@@ -307,6 +359,7 @@ class SqlHand:
 
 					fk_values = list()
 
+					# sel from all foreign keys tables to obtain the needed foreign key value
 					for fk_combo in fk_tabl_col_comb:
 						t = fk_combo[:fk_combo.find('.')]
 						col = fk_combo[len(t)+1:]
@@ -318,9 +371,6 @@ class SqlHand:
 							return False
 
 						else:
-							# print(re_fk_val)
-							# print(len(re_fk_val))
-							# print(len(re_fk_val[0]))
 							fk_values.extend(list(re_fk_val[0]))
 
 					table_entryargs_vals = list()
@@ -331,9 +381,9 @@ class SqlHand:
 						table_entryargs_vals.append(entry)
 
 					for insert_vals in table_entryargs_vals:
-						where, ins_dict = create.dict_sql_ins(table_entryargs, table_entryargs_colnames, insert_vals)
+						where, ins_dict = create.dict_sql_ins(table_entryargs_colnames, insert_vals)
 
-						if len(self.sel(f"SELECT {list(ins_dict.keys())[0]} FROM {table_entryargs} WHERE {where};", tuple(ins_dict.values()), _format=False, Conn=Conn)) == 0:
+						if len(self.sel(f"SELECT {strings.get_str_sql_sel_cols(ins_dict)} FROM {table_entryargs} WHERE {where};", tuple(ins_dict.values()), _format=False, Conn=Conn)) == 0:
 
 							com = strings.get_str_sql_ins(table_entryargs, ins_dict)
 
@@ -355,11 +405,175 @@ class SqlHand:
 		else:
 			# case for debug -> more details, info -> less details
 			if self.__class__._log.isEnabledFor(10):	
-				self.__class__._log.debug(f"_ins_one prevented duplicate insert into {table} of columns{tuple(ins_dict.keys())} and values{tuple(ins_dict.values())}, their id: {re_id}")
+				if re_sel_id:	
+					self.__class__._log.debug(f"_ins_one prevented duplicate insert into {table} of columns{tuple(ins_dict.keys())} and values{tuple(ins_dict.values())}, their id: {re_sel}")
+				else:
+					self.__class__._log.debug(f"_ins_one prevented duplicate insert into {table} of columns{tuple(ins_dict.keys())} and values{tuple(ins_dict.values())}")
 			else:
-				self.__class__._log.warning(f"_ins_one prevented duplicate insert into {table}, value's id: {re_id}")
+				if re_sel_id:	
+					self.__class__._log.warning(f"_ins_one prevented duplicate insert into {table}, value's id: {re_sel}")
+				else:
+					self.__class__._log.warning(f"_ins_one prevented duplicate insert into {table}")
 
 			return False
+
+
+	def updt(self, table:str, cols: Union[tuple, list], vals: Union[tuple, list], unique:dict) -> bool:
+
+		# checking type cols
+		if all(not isinstance(cols, i) for i in (tuple, list)):
+			self.__class__._log.error(f"updt TypeError due to cols not being a list or tuple: {type(cols)}")
+
+			return False
+
+		# checking type vals
+		elif all(not isinstance(vals, i) for i in (tuple, list)):
+			self.__class__._log.error(f"updt TypeError due to vals not being a list or tuple: {type(vals)}")
+
+			return False
+
+		elif not isinstance(unique, dict):
+			self.__class__._log.error(f"updt TypeError due to unique not being a dict: {type(vals)}")
+
+			return False
+
+		# check for same len
+		elif len(vals) != len(cols):
+			self.__class__._log.error(f"updt ValueError due to different len in cols and vals: {len(cols)} {len(vals)}")
+
+			return False
+
+		# get conns
+		Conn = self.get_conn(read_only=False, persist=True)
+
+		# to prevent Conn being left open, finally block needed
+		try:	
+			if not Conn.open_status:
+				self.__class__._log.critical("updt Conn.open_status 'False', aborting")
+
+				return False
+
+			# make both lists
+			if isinstance(cols, tuple):
+				cols = list(cols)
+			if isinstance(vals, tuple):
+				vals = list(vals)
+
+			if "id" in cols:
+				cols.remove("id")
+
+			# go through cols and make sure they are in 
+			# the right <table>.<col> format, col should also be the right one
+
+			# process it for UPDATE
+			for indx, col in enumerate(cols.copy()):
+
+				# look for a possible foreign key version of col in the table in Schema.columns
+				if f"{col}_id" in self.Scheme.schemes[table].columns:
+					real_col = f"{col}_id"
+				
+				# maybe col is the original column name
+				elif col in self.Scheme.schemes[table].columns:
+					real_col = col
+
+				else:
+					# get next best possible real_col and log it as INFO
+					li = [i for i in self.Scheme.schemes[table].columns if col in i]
+					real_col = next(li)
+					self.__class__._log.debug(f"updt guessed the real_col of '{col}' is '{real_col}' out of {li}")
+
+				cols[indx] = real_col
+				tabl_real_col_comb = f"{table}.{real_col}"
+
+				# check dependancy
+				if tabl_real_col_comb in self.Scheme.dependancies:
+
+					ref_tbl, ref_col = self.Scheme.dependancies[f"{table}.{real_col}"].split(".")
+
+					val = vals[indx]
+					# check the ref_tbl for the val
+					com, com_val = f"SELECT {ref_col} FROM {ref_tbl} WHERE {ref_tbl[1:]}=?", (val,)
+
+					self.__class__._log.debug(f"updt sel id from '{ref_tbl}' WHERE {ref_tbl[1:]}=? {(val,)}")
+					re = self.sel(com, com_val, _format=False, Conn=Conn)
+
+					# check for results, to know if _val already in there
+					if re is not None and len(re) > 0:
+						self.__class__._log.debug(f"updt sel from '{ref_tbl}' WHERE {ref_tbl[1:]}={val} returned {re}")
+						_id = re[0][0]
+						vals[indx] = _id
+
+					# if error occured re is None
+					elif re is None:
+						self.__class__._log.error(f"updt failed sel from '{ref_tbl}' WHERE {ref_tbl[1:]}={val} returned None")
+						self.__class__._log.debug(f"updt self.Scheme.dependancies: {self.Scheme.dependancies}")
+
+						return False
+
+					# expect len to be 0, aka not in there
+					else:
+						self.__class__._log.debug(f"updt sel from '{ref_tbl}' WHERE {ref_tbl[1:]}={val} returned len 0")
+
+						# insert val into that table
+						re_ins = self.ins(ref_tbl, [val]) # TODO make it use all columns in case the ref_tbl has more than just 2 columns id and value
+						self.__class__._log.debug(f"updt insert into ref_tbl({ref_tbl}) {ref_tbl[1:]}={val} returned {re_ins}")
+
+						# True on success
+						if re_ins:
+							self.__class__._log.debug(f"updt insert into '{ref_tbl}' {ref_tbl[1:]}={val} successful")
+							# now need to grab id
+							re = self.sel(com, com_val, _format=False, Conn=Conn)
+
+							# re should have len and be list now
+							if re is None or len(re) == 0:
+								self.__class__._log.error(f"updt sel '{com}', {com_val} returned NoneType or len 0 after specific insert")
+
+								return False
+
+							# insert+select success
+							else:
+								_id = re[0][0]
+								vals[indx] = _id
+								self.__class__._log.debug(f"updt after ins sel id from '{ref_tbl}' WHERE {ref_tbl[1:]}={val} returned id={_id}")
+							
+						else:
+							self.__class__._log.error(f"updt failed insert into '{ref_tbl}' {ref_tbl[1:]}={val}")
+
+							return False
+
+
+			# until here vals and cols have been redacted and values and columns should have been replaced with the
+			# ids of the foreign keys and with the true column names
+
+			where, where_dict = create.dict_sql_updt(list(unique.keys()), list(unique.values()))
+			set_, set_dict = create.dict_sql_updt(cols, vals)
+
+			com_vals = list()
+			com_vals.extend(set_dict.values())
+			com_vals.extend(where_dict.values())
+
+			# UPDATE the columns in that row using unique
+			com = f"UPDATE {table} SET {set_} WHERE {where};"
+
+			self.__class__._log.debug(f"updt '{com}', {com_vals}")
+
+			if not isinstance(self._exec_com(Conn, com, tuple(com_vals)), list):
+				self.__class__._log.error(f"updt failed in {table} to set {set_}")
+
+				return False
+
+			else:
+				self.__class__._log.debug(f"updt in {table} set {set_}")
+
+				return True
+
+		except Exception as E:
+			self.__class__._log.critical(f"updt unexpected Error, {tb(E)}")
+
+			return False
+
+		finally:
+			self.ConnHandler.remove_conn(Conn)
 
 
 	def sel(self, com:str, com_var:tuple=tuple(), _format:bool=True, Conn: Union[Connection, None]=None) -> list:
@@ -439,6 +653,29 @@ class SqlHand:
 			return list()
 
 
+	def del_simple(self, com:str, com_var_tup:tuple=tuple(), Conn: Union[Connection, None]=None) -> bool:
+		# only wraps _exec_com to get a Conn or apply given Conn
+		# then just passes com and com_var_tup to _exec_com
+
+		# get or set Conn
+		Conn = self.get_conn(read_only=False) if Conn is None else Conn
+
+		if not Conn.open_status:
+			self.__class__._log.critical("_ins_one Conn.open_status 'False', aborting")
+
+			return False
+
+		if not isinstance(self._exec_com(Conn, com, com_var_tup), list):
+			self.__class__._log.error(f"del_simple failed delete '{com}, {com_var_tup}'")
+
+			return False
+
+		else:
+			self.__class__._log.debug(f"del_simple deleted with '{com}, {com_var_tup}'")
+
+			return True
+
+
 	def _exec_com(self, Conn:Connection, com:str, com_var_tup:tuple=tuple()) -> Union[list, bool]:
 		if Conn.open_status:	
 			cur = Conn.Conn.cursor()
@@ -481,7 +718,7 @@ class SqlHand:
 		finally:
 			cur.close()
 			# also close reading connections
-			if Conn.read_only and not Conn.persist and not self.ConnHandler.remove_conn(Conn):
+			if not Conn.persist and not self.ConnHandler.remove_conn(Conn):
 				self.__class__._log.error(f"_exec_com failed removing Connection '{Conn.key_id}' from ConnectionHandler.conns")
 
 
@@ -512,6 +749,17 @@ class SqlHand:
 			self.__class__._log.warning(f"com_str is ending in undefined characters: {short(com_str)}")
 
 		return com_str
+
+
+	def _has_table_column(self, table:str, column:str, Conn:Connection) -> bool:
+		# returns True if column exists in table, else returns False
+
+		com = f"SELECT COUNT(*) AS CNTREC FROM pragma_table_info('{table}') WHERE name='{column}'"
+		re = self._exec_com(Conn, com)[0][0]
+		if re > 0:
+			return True
+		else:
+			return False
 
 
 	def use_formatter(self, Formatter:Formatter, table:str=str()) -> bool:
@@ -584,53 +832,70 @@ class SqlHand:
 		return lines
 
 
-	def init_scheme(self, Conn:Connection) -> None:
-		# runs the sql CREATE TABLE commands
-
-		for table in self.Scheme.schemes:
-			re = self._exec_com(Conn=Conn, com=self.Scheme.schemes[table].raw_schema)			
+	def init_DB(self, Conn:Connection) -> None:
+		
+		# get journal_mode
+		if self.journal_mode is None:	
 			
+			re = self._exec_com(Conn=Conn, com="PRAGMA journal_mode;")
 			if isinstance(re, list):
-				self.__class__._log.debug(f"initialized '{table}' in {short(self.dbfp)}")
-
-				# TODO validate table has all columns that are in self.Scheme.schemes[table].columns
-				# condition set() == set(self.Scheme.schemes[table].columns)
-				# if not the same, make set.difference() and check needed columns are FOREIGN KEY
-				# if so, build FOREIGN KEY sql and add to com 
-				# do sql to add needed column through exec com
+				self.journal_mode = re[0][0].upper()
+				self.__class__._log.debug(f"grabbed pragma journal_mode '{self.journal_mode}' through '{Conn.key_id}' from {short(self.dbfp)}")
 
 			else:
-				self.__class__._log.error(f"failed initialization for table '{table}' {shortb(self.Scheme.schemes[table].raw_schema)}")
+				self.__class__._log.error(f"failed grabbing pragma journal_mode from {short(self.dbfp)}")
 
+		# set journal_mode
+		if self.journal_mode.upper() != "WAL" and not Conn.read_only and Conn.key_id == "main1":
+			# set journal_mode
+			re = self._exec_com(Conn=Conn, com="PRAGMA journal_mode=WAL;")
+			if isinstance(re, list):
+				self.__class__._log.debug(f"grabbed pragma journal_mode from {short(self.dbfp)}")
+				self.journal_mode = re[0][0].upper()
 
-	def get_conn(self, read_only:bool=True) -> Union[Connection, None]:
-		if not read_only:
-			# check for main Connection
-			if not "main" in self.ConnHandler.conns:
-				self.__class__._log.error("no 'main' Connection in ConnectionHandler")
-			
-			# check if main Connection is connected
-			elif not self.ConnHandler.conns["main"].open_status:
-				if self.ConnHandler.conns["main"].open_DB(read_only) is not None:
-					# first time actually opened the Connection
-					# init Scheme
-					self.init_scheme(self.ConnHandler.conns["main"])
+			else:
+				self.__class__._log.error(f"failed grabbing pragma journal_mode from {short(self.dbfp)}")
 
-					return self.ConnHandler.conns["main"]
+		# create tables
+		if not Conn.read_only and Conn.key_id == "main1":	
+
+			# runs the sql CREATE TABLE commands
+			for table in self.Scheme.schemes:
+				re = self._exec_com(Conn=Conn, com=self.Scheme.schemes[table].raw_schema)			
+				
+				if isinstance(re, list):
+					self.__class__._log.debug(f"initialized '{table}' in {short(self.dbfp)}")
+
+					# TODO validate table has all columns that are in self.Scheme.schemes[table].columns
+					# condition set() == set(self.Scheme.schemes[table].columns)
+					# if not the same, make set.difference() and check needed columns are FOREIGN KEY
+					# if so, build FOREIGN KEY sql and add to com 
+					# do sql to add needed column through exec com
 
 				else:
-					return
+					self.__class__._log.error(f"failed initialization for table '{table}' {shortb(self.Scheme.schemes[table].raw_schema)}")
 
-			elif self.ConnHandler.conns["main"].open_status:
-				return self.ConnHandler.conns["main"]
 
-			else:
-				self.__class__._log.error("get_conn general condition error")
+	def get_conn(self, read_only:bool=True, persist: Union[bool, None]=None) -> Union[Connection, None]:
+		
+		if persist is None:
+			persist = not read_only
+
+		# check if there is a suitable conn already opened by this thread
+		own_t_id = get_ident()
+		suitable_conn_id = list()
+		# check for persist True, thread_id to match this thread and then append
+		if any(True for i in self.ConnHandler.conns.values() if i.persist and i.thread_id == own_t_id and suitable_conn_id.append(i.key_id) is None):
+			self.__class__._log.debug(f"get_conn found suitable Conn '{suitable_conn_id[0]}'")
+			
+			return self.ConnHandler.conns[suitable_conn_id.pop(0)]
 
 		else:
-			# get read_only Connection
-
-			return self.ConnHandler.add_conn(self.dbfp, read_only=read_only)
+			# need to pass ConnHandler init_DB on read_only=False get_conn
+			return self.ConnHandler.get_conn(read_only, 
+									self.journal_mode, 
+									init_DB=self.init_DB,
+									persist=persist)
 
 
 	def close(self):
@@ -654,7 +919,7 @@ class SqlHand:
 
 				try:	
 					if Conn.open_status:
-						item.append("open")
+						item.append("open_status True")
 
 						if not Conn.close_DB():
 							item.append(False)
@@ -663,7 +928,7 @@ class SqlHand:
 							item.append(True)
 
 					else:
-						item.append("closed")
+						item.append("open_status False")
 
 				except sqlite3.ProgrammingError as PE:
 					# maybe it happened because of DB already closed

@@ -47,8 +47,8 @@ class Schemers:
 		self.schemes = dict()
 
 		if len(importerfp) > 0:
-			self.importer(importerfp)
-			self.finalize()
+			if self.importer(importerfp):
+				self.finalize()
 
 
 	def add_table(self, schema:Union[Schema, None]=None, table:str='') -> bool:
@@ -159,26 +159,29 @@ class Schemers:
 			raise Exception(f'schema foreign key "{key}" references "{value}", but the referenced table has been processed without said column "{ref_col}')
 
 
-	def importer(self, fp:str) -> None:
+	def importer(self, fp:str) -> bool:
 		re, raw_str = load(fp)
 
 		if not re:
 			self.__class__._log.error(f"failed loading multiple schema from {fp}")
 
-			return
+			return False
 
 		# schemas need to be divided by '\n\n' in file
 		# aka at least one empty line between them
 		li_schema = raw_str.split('\n\n')
 
 		for item in li_schema:
+
 			schema = Schema(item.strip())
 			if not self.add_schema(schema):
 				self.__class__._log.error(f"failed loading schema from {schema.raw_schema}")
 
-				return
+				return False
 
 		self.__class__._log.info(f"imported multiple schema from {short(fp)}")
+
+		return True
 
 
 	def finalize(self, log_true=True) -> bool:

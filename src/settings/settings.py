@@ -73,9 +73,6 @@ class Config:
 	@classmethod
 	def load_default_config(cls) -> dict:
 		settings = {
-						"DEFAULT_SESSION_MAX_ATTEMPT_LIB": 2,
-						"DEFAULT_SESSION_MAX_ATTEMPT_SESS": 2,
-						
 						# "DEFAULT_SESSION_HEADERS_LINUX": {
 						# 									'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
 						# 									'Accept-Encoding': 'gzip, deflate, br',
@@ -88,26 +85,18 @@ class Config:
 						# 									'Sec-Fetch-Mode': 'navigate',
 						# 									'Sec-Fetch-Site': 'same-origin',
 						# 									'Upgrade-Insecure-Requests': '1',
-						# 									'User-Agent': 'python requests/httpx'
+						# 									'User-Agent': 'python-httpx/0.28.1'		# 'python-requests/2.31.0'
 						# 									},
 
+						"path_config": f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json",
+						"DB_LOG_FP": Folder.os_projver_folderpath+"/"+"test4.sqlite",
+						"DB_SCHEME_LOG_FP": "/home/darkminosa/dev/spacetr/src/hkeep/log/scheme.ex",
+						"DB_NETMSG_FP": Folder.os_projver_folderpath+"/"+"netmsg.sqlite",
+						"DB_SCHEME_NETMSG_FP": "/home/darkminosa/dev/spacetr/src/netw/scheme.ex",
+						
+						"DEFAULT_SESSION_HEADERS_LINUX": {'accept': '*/*', 'accept-encoding': 'gzip, deflate, br', 'connection': 'keep-alive'},
 
-						"DEFAULT_SESSION_HEADERS_LINUX": {
-															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-															'Accept-Encoding': 'gzip, deflate, br',
-															'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
-															'Priority': 'u=0, i',
-															'Connection': 'keep-alive',
-															'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126"',
-															'Sec-Ch-Ua-Platform': 'Linux',
-															'Sec-Fetch-Dest': 'document',
-															'Sec-Fetch-Mode': 'navigate',
-															'Sec-Fetch-Site': 'same-origin',
-															'Upgrade-Insecure-Requests': '1',
-															'User-Agent': 'python-httpx/0.28.1'		# 'python-requests/2.31.0'
-															},
-
-															#{'User-Agent': 'python-requests/2.31.0', 'Accept-Encoding': 'gzip, deflate, br', 'Accept': '*/*', 'Connection': 'keep-alive'}
+															#{'accept': '*/*', 'accept-encoding': 'gzip, deflate, br', 'connection': 'keep-alive'}
 
 						"DEFAULT_SESSION_HEADERS_LINUX_PRIV": {
 															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -122,7 +111,7 @@ class Config:
 															'Sec-Fetch-Site': 'same-origin',
 															'Upgrade-Insecure-Requests': '1',
 															'User-Agent': 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-															},
+						},
 						"DEFAULT_SESSION_HEADERS_WIN": {
 															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
 															'Accept-Encoding': 'gzip, deflate, br',
@@ -133,7 +122,7 @@ class Config:
 															'Sec-Fetch-Site': 'same-origin',
 															'Upgrade-Insecure-Requests': '1',
 															'User-Agent': 'python requests/httpx'
-															},
+						},
 						"DEFAULT_SESSION_HEADERS_WIN_PRIV": {
 															'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
 															'Accept-Encoding': 'gzip, deflate, br',
@@ -144,9 +133,59 @@ class Config:
 															'Sec-Fetch-Site': 'same-origin',
 															'Upgrade-Insecure-Requests': '1',
 															'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
-															},
-						"path_config": f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json",
-						"ExitThreadSignal": "//exit"
+						},
+						"DEFAULT_SESSION_MAX_ATTEMPT_LIB": 2,
+						"DEFAULT_SESSION_MAX_ATTEMPT_SESS": 2,
+						"ExitThreadSignal": "//exit",
+						"HTTP_REPEAT_INVALIDATION": ("error", "method not allowed", "conflict"),
+						"NAVIGATION_MULTIPLIER": {
+													"CRUISE": 25,
+													"DRIFT": 250,
+													"BURN": 12.5,
+													"STEALTH": 30,
+						},
+						"sites": {
+									"SPACETRADERS": {
+														"POST": {
+																"REGISTER": ["https://api.spacetraders.io/v2/register", {"symbol": "{CALLSIGN}", "faction": "{FactionSymbol}"}],
+																"ACCEPT_CONTRACT": "https://api.spacetraders.io/v2/my/contracts/{contractId}/accept",
+																"DELIVER_CONTRACT": ["https://api.spacetraders.io/v2/my/contracts/{contractId}/deliver", {"shipSymbol": "{miningShipSymbol}", "tradeSymbol": "{GOOD}", "units": "{QUANTITY}"}],
+																"FULLFILL_CONTRACT": "https://api.spacetraders.io/v2/my/contracts/{contractId}/fulfill",
+																"GO_ORBIT": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/orbit",
+																"GO_WAYPOINT": ["https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/navigate", {"waypointSymbol": "{WaypointSymbol}"}],
+																"REFUEL": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/refuel",
+																"PURCHASE_SHIP": ["https://api.spacetraders.io/v2/my/ships", {"shipType": "{SHIP_TYPE}", "waypointSymbol": "{shipyardWaypointSymbol}"}],
+																"DOCK_SHIP": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/dock",
+																"EXTRACT_ORES": "https://api.spacetraders.io/v2/my/ships/{miningShipSymbol}/extract",
+																"SELL": ["https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/sell", {"symbol": "{GOOD}", "units": "{QUANTITY}"}],
+																"SCAN_WAYPOINT": "https://api.spacetraders.io/v2/my/ships/{shipSymbol}/survey",
+																"USE_SCAN": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/extract", {"survey.signature": "{surveySignature}", "survey.symbol": "{surveySymbol}", "survey.expiration": "{surveyExpiration}", "survey.deposits": "{surveyDeposits}"}],
+																"GO_WARP": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/warp", {"systemSymbol": "{systemSymbol}"}],
+																"GO_JUMP": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/jump", {"systemSymbol": "{systemSymbol}"}]
+														},
+														"GET": {
+																"PING": "https://api.spacetraders.io/v2",
+																"AGENT_INFO": "https://api.spacetraders.io/v2/my/agent",
+																"LOCATION_INFO": "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints/{waypointSymbol}",
+																"FACTIONS_INFO": "https://api.spacetraders.io/v2/my/factions",
+																"CONTRACTS_INFO": "https://api.spacetraders.io/v2/my/contracts",
+																"WORLD": "https://api.spacetraders.io/v2/systems",
+																"TUTORIAL_ASTEROID" : "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints?type=ENGINEERED_ASTEROID",
+																"SHIPS_INFO": "https://api.spacetraders.io/v2/my/ships",
+																"SHIP_INFO": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}",
+																"FIND_SHIPYARD": "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints?traits=SHIPYARD",
+																"FIND_MARKETPLACE": "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints?traits=MARKETPLACE",
+																"SHIP_CARGO": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/cargo",
+																"WAYPOINTS": "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints",
+																"MARKETPLACE_DATA": "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints/{WaypointSymbol}/market",
+																"SHIPYARD_DATA": "https://api.spacetraders.io/v2/systems/{systemSymbol}/waypoints/{WaypointSymbol}/shipyard"
+														},
+														"PATCH": {
+																"FLIGHT_MODE": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/nav", {"flightMode": "{CRUISE_BURN_DRIFT_STEALTH}"}]
+														}
+									}
+
+						},
 		}
 
 		return settings
