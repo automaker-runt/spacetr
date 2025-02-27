@@ -7,7 +7,9 @@ def validate_re(resp, logger, err_msg:str) -> bool:
 			if hasattr(resp.Response, "status_code") and resp.Response.status_code in range(199,211,1):
 				return True
 
-		logger(f"{err_msg} ({resp.Response._reqID})")
+		# ObjManager calls with logger, err_msg set to None
+		if logger is not None:
+			logger(f"{err_msg} ({resp.Response._reqID})")
 
 		return False
 

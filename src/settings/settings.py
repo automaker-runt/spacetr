@@ -88,11 +88,19 @@ class Config:
 						# 									'User-Agent': 'python-httpx/0.28.1'		# 'python-requests/2.31.0'
 						# 									},
 
+						"CALLSIGN_SUFX": ["TRADER", "TR4DER", "TRAD3R", "TR4D3R", "7RADER", "7R4DER", "7RAD3R", "7R4D3R"],
+
 						"path_config": f"{os.path.abspath(Folder.os_projver_folderpath)}/config.json",
-						"DB_LOG_FP": Folder.os_projver_folderpath+"/"+"test4.sqlite",
-						"DB_SCHEME_LOG_FP": "/home/darkminosa/dev/spacetr/src/hkeep/log/scheme.ex",
-						"DB_NETMSG_FP": Folder.os_projver_folderpath+"/"+"netmsg.sqlite",
-						"DB_SCHEME_NETMSG_FP": "/home/darkminosa/dev/spacetr/src/netw/scheme.ex",
+						"DB_LOG_FP": f"{os.path.abspath(Folder.os_projver_folderpath)}/test4.sqlite",
+						"DB_NETMSG_FP": f"{os.path.abspath(Folder.os_projver_folderpath)}/netmsg.sqlite",
+						"DB_SPACETR_FP": f"{os.path.abspath(Folder.os_projver_folderpath)}/sptr.sqlite",
+						"DB_LOG_FP_PROD": "/var/local/data/logs_utc.sqlite",
+						"DB_NETMSG_FP_PROD": "/var/local/data/netmsg.sqlite",
+						"DB_SPACETR_FP_PROD": "/var/local/data/sptr.sqlite",
+						#"DB_SPACETR_FP_PROD": f"{os.path.abspath(Folder.os_projver_folderpath)}/sptr.sqlite",
+						"DB_SCHEME_LOG_FP": f"{os.path.abspath(Folder.os_projver_folderpath)}/src/hkeep/log/scheme.ex",
+						"DB_SCHEME_NETMSG_FP": f"{os.path.abspath(Folder.os_projver_folderpath)}/src/netw/scheme.ex",
+						"DB_SCHEME_SPACETR_FP": f"{os.path.abspath(Folder.os_projver_folderpath)}/src/core/scheme.ex",
 						
 						"DEFAULT_SESSION_HEADERS_LINUX": {'accept': '*/*', 'accept-encoding': 'gzip, deflate, br', 'connection': 'keep-alive'},
 
@@ -137,6 +145,7 @@ class Config:
 						"DEFAULT_SESSION_MAX_ATTEMPT_LIB": 2,
 						"DEFAULT_SESSION_MAX_ATTEMPT_SESS": 2,
 						"ExitThreadSignal": "//exit",
+						"FACTIONS": ["QUANTUM", "DOMINION", "ASTRO", "CORSAIRS", "VOID", "OBSIDIAN", "AEGIS", "UNITED", "SOLITARY", "COBALT", "OMEGA", "ECHO", "COSMIC"],
 						"HTTP_REPEAT_INVALIDATION": ("error", "method not allowed", "conflict"),
 						"NAVIGATION_MULTIPLIER": {
 													"CRUISE": 25,
@@ -158,8 +167,9 @@ class Config:
 																"DOCK_SHIP": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/dock",
 																"EXTRACT_ORES": "https://api.spacetraders.io/v2/my/ships/{miningShipSymbol}/extract",
 																"SELL": ["https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/sell", {"symbol": "{GOOD}", "units": "{QUANTITY}"}],
-																"SCAN_WAYPOINT": "https://api.spacetraders.io/v2/my/ships/{shipSymbol}/survey",
-																"USE_SCAN": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/extract", {"survey.signature": "{surveySignature}", "survey.symbol": "{surveySymbol}", "survey.expiration": "{surveyExpiration}", "survey.deposits": "{surveyDeposits}"}],
+																"JETTISON": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/jettison", {"symbol": "{GOOD}", "units": "{QUANTITY}"}],
+																"CREATE_SURVEY": "https://api.spacetraders.io/v2/my/ships/{shipSymbol}/survey",
+																"USE_SURVEY": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/extract/survey", {"signature": "{surveySignature}", "symbol": "{WaypointSymbol}", "deposits": [{"symbol": "{GOOD}"}], "expiration": "{surveyExpiration}", "size": "{SMALL_MODERATE_LARGE}"}],
 																"GO_WARP": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/warp", {"systemSymbol": "{systemSymbol}"}],
 																"GO_JUMP": ["https://api.spacetraders.io/v2/my/ships/{shipSymbol}/jump", {"systemSymbol": "{systemSymbol}"}]
 														},
@@ -186,6 +196,12 @@ class Config:
 									}
 
 						},
+						"THREAD_ACTF_LOGI_INTERVAL": 1,
+						"THREAD_CTRCT_LOGI_INTERVAL": 2,
+						"THREAD_CTRCT_LOGI_API_INTERVAL": 1845,
+						"THREAD_CORE_JOIN_TIMEOUT": 21.14,
+						"THREAD_MAIN_DEFAULT_JOIN_TIMEOUT": 3.31,
+						
 		}
 
 		return settings

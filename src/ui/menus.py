@@ -1,11 +1,11 @@
 # menus
-import json
+import json, threading
 from python_console_menu import AbstractMenu, MenuItem
 
 from typing import Union
 
-from core.shiphandler import ShipHandler
-from core.ships import Ship
+from core.logic import Core
+from hkeep.log.logger import get_logger
 from ui.history import MenuHistory
 from ui.options import MenuOptions
 from utils import links
@@ -13,6 +13,9 @@ from utils.strings import extract
 
 
 class OwnAbstractMenu(AbstractMenu):
+
+	_log = get_logger(__name__)
+
 	options = MenuOptions({"post_mode": "json"})
 
 	@classmethod
@@ -199,13 +202,28 @@ class Menu(OwnAbstractMenu):
 				return True, re
 
 
-	def __init__(self, session, Conf, SqlHan, get_history:MenuHistory, post_history:MenuHistory):
+	def __init__(self, session,
+						Conf,
+						SqlHan,
+						get_history:MenuHistory,
+						post_history:MenuHistory,
+						BEARER_ACC:dict,
+						events,
+						wake_up_qs,
+						threads):
+		
 		super().__init__("> spacetr\n")
 		self.session = session
 		self.Conf = Conf
 		self.SqlHan = SqlHan
 		self.get_history = get_history
 		self.post_history = post_history
+		self.BEARER_ACC = BEARER_ACC
+		self.events = events
+		self.wake_up_qs = wake_up_qs
+		self.threads = threads
+
+		self.core_thread_ev = None
 
 		self.ShipHan = None
 
@@ -214,13 +232,34 @@ class Menu(OwnAbstractMenu):
 		self.add_menu_item(MenuItem(0, "exit").set_as_exit_option())
 		self.add_menu_item(MenuItem(1, "GET", lambda: self._sess_get()))
 		self.add_menu_item(MenuItem(2, "POST", lambda: self._sess_post()))
-		self.add_menu_item(MenuItem(3, "Deploy Fleet", lambda: self._build_fleet()))
-		self.add_menu_item(MenuItem(4, "Options", menu=OptionsSubMenu()))
+		self.add_menu_item(MenuItem(3, "Deploy Core logic", lambda: self._init_Core()))
+		self.add_menu_item(MenuItem(4, "End Core logic", lambda: self._stop_Core()))
+		#self.add_menu_item(MenuItem(4, "Register new Agent", lambda: self._sess_post(url=self.Conf.config["sites"]["SPACETRADERS"]["POST"]["REGISTER"],
+		#																				headers=self.BEARER_ACC)))
+		self.add_menu_item(MenuItem(5, "Options", menu=OptionsSubMenu()))
 		# self.add_menu_item(MenuItem(2, "Show hidden menu item", lambda: self.__should_show_hidden_menu__()))
 		# self.add_hidden_menu_item(MenuItem(3, "Hidden menu item", lambda: print("I was a hidden menu item")))
 
-	def _build_fleet(self):
-		self.ShipHan = ShipHandler(self.session, self.Conf, self.SqlHan, "1")
+	def _init_Core(self):
+		self.core_thread_ev = threading.Event()
+		core_thr = threading.Thread(target=Core,
+									args=(self.session,
+											self.Conf,
+											self.SqlHan,
+											self.core_thread_ev,
+											self.events,
+											self.wake_up_qs,
+											self.threads),
+									name="t_core")
+		self.threads.append(core_thr)
+		self.events.append(self.core_thread_ev)
+
+		core_thr.start()
+
+	
+	def _stop_Core(self):
+		if self.core_thread_ev is not None:	
+			self.core_thread_ev.set()
 
 	
 	def _sess_get(self, **kwargs):
@@ -272,6 +311,9 @@ class Menu(OwnAbstractMenu):
 		else:
 			url = kwargs["url"]
 			self.post_history.add(url)
+
+		if "register" in url:
+			kwargs.update({"headers": self.BEARER_ACC})
 
 		if not isinstance(data, bool):
 			

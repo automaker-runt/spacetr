@@ -36,7 +36,6 @@ class Schemers:
 			len(importerfp) == 0):
 			raise Exception('init of Scheme with no tables and no importerfp')
 
-		
 		self.finalized = False
 		# tables needs to become set() here, not in parameter declaration, since there every new
 		# Schemers Obj will then get the same default tables as the first Schemers Obj of that main session 
@@ -45,6 +44,7 @@ class Schemers:
 								"unknown_foreign_of": list()
 							}
 		self.schemes = dict()
+		self.views = list()
 
 		if len(importerfp) > 0:
 			if self.importer(importerfp):
@@ -173,11 +173,17 @@ class Schemers:
 
 		for item in li_schema:
 
-			schema = Schema(item.strip())
-			if not self.add_schema(schema):
-				self.__class__._log.error(f"failed loading schema from {schema.raw_schema}")
+			item = item.strip()
 
-				return False
+			if item.split()[1] == "VIEW":
+				self.views.append(item)
+
+			else:
+				schema = Schema(item)
+				if not self.add_schema(schema):
+					self.__class__._log.error(f"failed loading schema from {schema.raw_schema}")
+
+					return False
 
 		self.__class__._log.info(f"imported multiple schema from {short(fp)}")
 

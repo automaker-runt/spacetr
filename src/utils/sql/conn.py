@@ -90,8 +90,10 @@ class Connection:
 
 		except sqlite3.ProgrammingError as PE:
 			if "SQLite objects created in a thread can only be used in that same thread." in str(PE):
-				self.__class__._log.warning(tb(PE))
+				self.__class__._log.warning(f"close_DB failed closing Conn '{self.key_id}', {tb(PE)}")
 			else:
+				self.__class__._log.critical(f"close_DB failed closing Conn '{self.key_id}', {tb(PE)}")
+
 				raise PE
 
 		except Exception as E:

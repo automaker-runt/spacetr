@@ -1,4 +1,5 @@
 import time, datetime
+from typing import Union
 
 
 def wait(delay_until:float, interval=0.1):
@@ -27,11 +28,15 @@ def conv_time_time_to_def(t:float, precision:str="millisecond") -> str:
 		raise ValueError("precision is wrong value")
 
 	re = str(datetime.datetime.fromtimestamp(t, datetime.UTC))[:pres]+"Z"
+	re = re[:10]+"T"+re[11:]
 
 	return re
 
 
-def ISO_to_epoch(t:str) -> float:
+def ISO_to_epoch(t:str) -> Union[float, int]:
+	if isinstance(t, Union[float, int]):
+		return t
+
 	utc_time = datetime.datetime.strptime(t, "%Y-%m-%dT%H:%M:%S.%fZ")
 	epoch_time = (utc_time - datetime.datetime(1970, 1, 1)).total_seconds()
 

@@ -1,11 +1,12 @@
 # shiphandler
 import json, time
+import pandas as pd
 from functools import partial
 from typing import Union
 
 from core.ships import Ship
-from core.utils import coord, meta, netw
-from core.waypoints import Waypoint
+from core.utils import coord, meta
+from core.utils.objmanager import ObjManager
 from hkeep.log.logger import get_logger
 from utils.time import ISO_to_epoch
 
@@ -15,19 +16,21 @@ class ShipHandler:
 	_log = get_logger(__name__)
 
 
-	def __init__(self, Sess, Conf, SqlHan, fleet_name:str):
+	def __init__(self, Objman:ObjManager,
+						fleet_name:str,
+						fleet_sys: Union[str, None]=None,
+						agent_total: Union[int, None]=None):
 		
-		# TODO
-		# make duplicate modules possible in _ship_modules and _ship_mounts
-
-		self.Sess = Sess
-		self.Conf = Conf
-		self.SqlHan = SqlHan
+		self.Objman = Objman
 		self.fleet = fleet_name
+		self.fleet_sys = fleet_sys
 		self.inventory = dict()
+		self.sdf = [pd.DataFrame()]
 
 		# lookup in DB if there are any ships in fleet
-		re_ships_sym = self.get_ships()
+		re_ships_sym = self.get_ships(agent_total)
+
+		err = False
 
 		# init ships
 		if len(re_ships_sym) == 0:
@@ -35,8 +38,7 @@ class ShipHandler:
 
 			# get the agent info for total ships
 			# agent just started, need to load the 2 ships in
-			if self.api_get_agent_info()["shipCount"] == 2:
-				err = False
+			if (agent_total is not None and agent_total == 2) or self.api_get_agent_info()["shipCount"] == 2:
 
 				for shippy in self.api_get_all_ships():
 					Shippy = self.init_ship(shippy)
@@ -44,14 +46,10 @@ class ShipHandler:
 					if not Shippy.insert_ship(Shippy.jj):
 						err = True
 						self.__class__._log.error("ShipHandler failed inserting Ship data of '{}.{}'".format(Shippy.name, Shippy.frame))
-										
-
-				if not err:
-						self.__class__._log.info("ShipHandler built Fleet '{}' with {} ships".format(fleet_name, len(self.inventory), Shippy.name, Shippy.frame))
-			
+													
 			#not even the ones u get from creating agent	
 			else:
-				self.__class__._log.critical("ShipHandler failed finding any ships to handle")
+				self.__class__._log.critical("ShipHandler failed instantiating any ships to handle")
 
 		else:
 			for shippy_sym in re_ships_sym:
@@ -60,17 +58,21 @@ class ShipHandler:
 				bluepr.update({"symbol": shippy_sym})
 				# create blank Ship Obj with only sym/name
 				Shippy = self.init_ship(bluepr)
-				# read all ship info
-				Shippy.jj = Shippy.select_ship()
+
+		if not err and len(self.inventory) > 0:
+			self.__class__._log.info(f"ShipHandler built Fleet '{self.fleet}' with {len(self.inventory)} ships")
+			if self.fleet_sys is None:
+				self.fleet_sys = list(self.inventory.values())[0].system
+
+			self.__class__._log.info(f"Fleet '{self.fleet}' was asigned system {self.fleet_sys}")
+
+		else:
+			self.__class__._log.critical("ShipHandler failed inserting ships into empty DB")
 
 
-		# self.get_wp_sym = partial(Waypoint.get_wp_info, SqlHan)
-		# self.get_wp_id = partial(Waypoint.get_wp_id, Sess, Conf, SqlHan)
+	def get_ships(self, agent_total: Union[int, None]=None) -> list:
 
-
-	def get_ships(self) -> list:
-
-		re = self.SqlHan.sel(f"SELECT symbol FROM ships WHERE fleets_id=?",
+		re = self.Objman.sel(f"SELECT symbol FROM ships WHERE fleets_id=?",
 								(self.fleet,),
 								_format=False)
 
@@ -81,31 +83,35 @@ class ShipHandler:
 			fleet_ships_in_db = True
 			db_ships = [i[0] for i in re]
 
-		# lookup endpoint for ships and add all of them to fleet
-		total, api_ships = self.api_get_ships(pages=False)
+		if agent_total is None:
+			# lookup endpoint for ships and add all of them to fleet
+			total, api_ships = self.api_get_ships(pages=False)
+		else:
+			total = agent_total
 
 		# either some ships are missing from DB
 		# or some other fleet also has ships
-		if total != len(db_ships):
+		if total != len(db_ships) and len(db_ships) != 0:
 			self.__class__._log.warning(f"Fleet '{self.fleet}' detected more ships exist outside own fleet")
 
 		if fleet_ships_in_db:
 			return db_ships
 
 		else:
-			self.__class__._log.warning(f"Fleet '{self.fleet}' has no ships")
+			self.__class__._log.warning(f"Fleet '{self.fleet}' has no ships in DB")
 
 			return db_ships
 
 
 	def api_get_agent_info(self) -> dict:
-		url = self.Conf.config["sites"]["SPACETRADERS"]["GET"]["AGENT_INFO"]
-		re = self.Sess.get(url=url)
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["AGENT_INFO"]
+		suc, re = self.Objman.get(url=url)
 
-		if netw.validate_re(re, self.__class__._log.error, "api_get_agent_info failed"):
+		if suc:
 			return re.Response.json()["data"]
 
 		else:
+			self.__class__._log.error("api_get_agent_info failed")
 			return {"shipCount": None}
 
 
@@ -119,10 +125,11 @@ class ShipHandler:
 	def api_get_ships(self, pages:bool=True) -> Union[None, int, list]:
 		# returns int/None, list
 		# int would be the number of total ships, if None, then len(list) gives total
-		url = self.Conf.config["sites"]["SPACETRADERS"]["GET"]["SHIPS_INFO"]
-		re = self.Sess.get(url=url)
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["SHIPS_INFO"]
+		suc, re = self.Objman.get(url=url)
 
-		if not netw.validate_re(re, self.__class__._log.error, f"api_get_ships failed to get ships for Fleet '{self.fleet}'"):
+		if not suc:
+			self.__class__._log.error(f"api_get_ships failed to get ships for Fleet '{self.fleet}'")
 
 			return None, list()	
 
@@ -135,53 +142,21 @@ class ShipHandler:
 			# if it needs more pages, pull them
 			# extend data with list coming back
 			if (pages and 
-				"meta" in data and
+				"meta" in re_dec and
 				meta.needs_more_pages(re_dec["meta"])):
-				return None, data.extend(Ships.api_get_pages(self.Sess, url, re_dec))
+				data.extend(meta.api_get_pages(self.Objman, url, re_dec, self.__class__._log))
+
+				return None, data
+
 			else:
 				return re_dec["meta"]["total"], data
-
-			# # prepare while
-			# limit = False
-			# page = 0
-			# url_p = url+"?page={page}"
-			# url = url_p.format(page=2)
-			
-			# # pull more pages if meta indicates further pages or upping limit
-			# while needs_more_pages(re_dec["meta"]):
-			# 	# go another cycle
-			# 	if not limit and "limit" not in url_p:
-			# 		page = 2
-			# 		re = self.Sess.get(url=url)
-					
-			# 		url_p = url_p+"&limit={limit}"
-
-			# 	else:
-			# 		if not limit:
-			# 			limit = True
-			# 			url = url_p.format(page=2, limit=20)
-
-			# 		else:
-			# 			page += 1
-			# 			url = url_p.format(page=page, limit=20)
-
-			# 		re = self.Sess.get(url=url)
-
-				
-			# 	if netw.validate_re(re, f"api_get_ships needs_more_pages failed to get ships for Fleet '{self.fleet}'"):
-			# 		re_dec = re.Response.content.decode()
-			# 		data.extend(re_dec["data"])
-			# 	else:
-			# 		break
-
-			# return data
 
 
 	def update_ships(self):
 		pass
 
 	def init_ship(self, ship_data:dict) -> Ship:
-		Shippy = Ship(ship_data, self.Sess, self.Conf, self.SqlHan, self.fleet)
+		Shippy = Ship(ship_data, self.sdf, self.Objman, self.fleet)
 
 		self.inventory.update({Shippy.name: Shippy})
 

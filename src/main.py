@@ -87,12 +87,13 @@ def init_settings():
 	HttpSession.setConfig(Config)
 
 
-def shutdown(ev:set, qs:set):
+def shutdown(ev:set, qs:set, flag:bool=True):
 	for e in ev:
 		e.set()
 
-	log.info("shutting down")
-	Config.save()
+	if flag:	
+		log.info("shutting down")
+		Config.save()
 
 	for q in qs[-1::-1]:
 		q.put(Config.config["ExitThreadSignal"])
@@ -112,7 +113,7 @@ def thr_sql_log(Sql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, name:str=
 	# get Conn here to actually open the DB from this thread
 	# and manifest Conn "main1"
 	Sql_h.get_conn(read_only=False, persist=True)
-	log.info(f"[{name}] instatiated")
+	log.info(f"[{name}] instantiated")
 		
 	try:
 		# dequeueing from logger QueueHandler and saving into DB
@@ -126,7 +127,6 @@ def thr_sql_log(Sql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, name:str=
 
 			# log it normally if it is LogRecord
 			elif isinstance(LRec, logging.LogRecord):
-				#print(len(LRec.args), LRec.args)
 
 				# forwarding placeholders in LogRecord.msg to DB
 				if isinstance(LRec.args, dict) and len(LRec.args) > 0:	
@@ -157,7 +157,7 @@ def thr_sql_netmsg(netSql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, nam
 	# get Conn here to actually open the DB from this thread
 	# and manifest Conn "main1"
 	netSql_h.get_conn(read_only=False, persist=True)
-	log.info(f"[{name}] instatiated")
+	log.info(f"[{name}] instantiated")
 	
 	try:
 		# dequeueing from SimpleQueue sQ_netmsg and saving into DB
@@ -201,7 +201,8 @@ def main():
 	init_settings()
 
 	events = list()
-	wake_up_qs = [sQ, sQ_netmsg]
+	#wake_up_qs = [sQ, sQ_netmsg]
+	wake_up_qs = [sQ_netmsg]
 	threads = list()
 
 	# Setting up Log DB
@@ -209,25 +210,24 @@ def main():
 	Schemer = Schemers(importerfp=Config.config["DB_SCHEME_LOG_FP"])
 	Deform = DeFormatter({"0": __version__})
 	Form = Formatter(Template('${id}--${version}--[${time_UTC}] [${loglvl}] ${logger}: $msg'))
-	dbf = os.path.abspath(Config.config["DB_LOG_FP"])
-
-	SH = SqlHand(Schemer, dbf, {"log": Deform}, ("log", Form))
+	
+	SH = SqlHand(Schemer, Config.config["DB_LOG_FP_PROD" if PROD else "DB_LOG_FP"], {"log": Deform}, ("log", Form))
 
 	# Setting up Spacetraders DB
-	SptrSchemer = Schemers(importerfp="../scheme.ex")
-	dbf = os.path.abspath("../sptr.sqlite")
-	SptrSH = SqlHand(SptrSchemer, dbf)
-	SptrSH.get_conn(read_only=False, persist=True)	
+	SptrSchemer = Schemers(importerfp=Config.config["DB_SCHEME_SPACETR_FP"])
+	
+	SptrSH = SqlHand(SptrSchemer, Config.config["DB_SPACETR_FP_PROD" if PROD else "DB_SPACETR_FP"])
+	SptrSH.get_conn(read_only=False, persist=True)
 
 	# thread for logging into DB
 	ev_t_sql_log_end = threading.Event()
-	events.append(ev_t_sql_log_end)
+	#events.append(ev_t_sql_log_end)
 	t_sql_log = threading.Thread(target=thr_sql_log, args=(SH, ev_t_sql_log_end, sQ), name="t_sql_log", daemon=True)
 	threads.append(t_sql_log)
 	t_sql_log.start()
 
 	# create netmsgSH with Request classmethod
-	netmsgSH = Request.set_netmsg(sQ_netmsg, dbfp=Config.config["DB_NETMSG_FP"], scfp=Config.config["DB_SCHEME_NETMSG_FP"])
+	netmsgSH = Request.set_netmsg(sQ_netmsg, dbfp=Config.config["DB_NETMSG_FP_PROD" if PROD else "DB_NETMSG_FP"], scfp=Config.config["DB_SCHEME_NETMSG_FP"])
 
 	# thread for putting network traffic (netmsg) into DB
 	ev_t_sql_netmsg_end = threading.Event()
@@ -249,26 +249,40 @@ def main():
 				Config,
 				SptrSH,
 				get_history=UI_G_History,
-				post_history=UI_P_History)
+				post_history=UI_P_History,
+				BEARER_ACC=BEARER["ACCOUNT"],
+				events=events,
+				wake_up_qs=wake_up_qs,
+				threads=threads
+				)
 	MainMenu.display()
 
 	
-	SptrSH.close()
 	shutdown(events, wake_up_qs)
-
-	SH.close()
+	NetwSession.close()
+	SptrSH.close()
 
 	for thr in threads:
-		to = None if thr.name != "t_sql_log" else 2.31
-		thr.join(to)
+		if thr.name in ("t_sql_log"):
+			continue
+
+		if thr.name != "t_core":
+			thr.join(Config.config["THREAD_MAIN_DEFAULT_JOIN_TIMEOUT"])
+		else:
+			thr.join(Config.config["THREAD_CORE_JOIN_TIMEOUT"])
 
 		if thr.is_alive():
-			log.warning(f"thread '{thr.name}' didn't auto-close on shutdown call")
+			log.warning(f"thread '{thr.name}' failed auto-close on shutdown call")
+
+	shutdown([ev_t_sql_log_end], [sQ], flag=False)
+	SH.close()
+	t_sql_log.join()
 
 
 if __name__ == "__main__":
 
 	loglevel = 100 if "log" not in sys.argv else 20
 	BEARER = jsonf.load(".env")[1]
+	PROD = any("prod" == i.lower() for i in sys.argv)
 
 	main()

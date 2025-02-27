@@ -172,7 +172,13 @@ class SqlHand:
 			return result
 
 
-	def _ins_one(self, table:str, one:list, col_order:list, extras: Union[dict, None]=None, **entryargs) -> bool:
+	def _ins_one(self, table:str,
+						one:list,
+						col_order:list,
+						extras: Union[dict, None]=None,
+						no_duplicates:bool=True,
+						**entryargs) -> bool:
+		
 		Conn = self.get_conn(read_only=False)
 
 		if not Conn.open_status:
@@ -307,21 +313,26 @@ class SqlHand:
 		try:	
 			where, ins_dict = create.dict_sql_ins(col_order, one)
 		except Exception as E:
-			print(col_order)
-			print(one)
 			raise E
 
-		# make sure our table has id column:
-		if self._has_table_column(table, 'id', Conn):
-			sel_col = 'id'
-			re_sel_id = True
-		else:
-			sel_col = '*'
-			re_sel_id = False
+		
+		if no_duplicates:
+			# make sure our table has id column:
+			if self._has_table_column(table, 'id', Conn):
+				sel_col = 'id'
+				re_sel_id = True
+			else:
+				sel_col = '*'
+				re_sel_id = False		
 
-		# sel what we just want to insert, if it returns len > 0, we don't insert
-		re_sel = self.sel(f"SELECT {sel_col} FROM {table} WHERE {where};", tuple(ins_dict.values()), _format=False, Conn=Conn)
-		if len(re_sel) == 0:			
+			# sel what we just want to insert, if it returns len > 0, we don't insert
+			re_sel = self.sel(f"SELECT {sel_col} FROM {table} WHERE {where};", tuple(ins_dict.values()), _format=False, Conn=Conn)
+		
+		# sometimes we want duplicates
+		else:
+			re_sel = tuple()
+
+		if len(re_sel) == 0:
 
 			com = strings.get_str_sql_ins(table, ins_dict)
 
@@ -573,10 +584,11 @@ class SqlHand:
 			return False
 
 		finally:
-			self.ConnHandler.remove_conn(Conn)
+			if Conn.key_id != "main1":	
+				self.ConnHandler.remove_conn(Conn)
 
 
-	def sel(self, com:str, com_var:tuple=tuple(), _format:bool=True, Conn: Union[Connection, None]=None) -> list:
+	def sel(self, com:str, com_var: Union[tuple, None]=None, _format:bool=True, Conn: Union[Connection, None]=None) -> list:
 		# assure reading Connection
 		if Conn is None:
 			Conn = self.get_conn()
@@ -585,6 +597,9 @@ class SqlHand:
 
 				return list()
 
+		# assure com_var is at least empty tuple
+		if com_var is None:
+			com_var = tuple()
 
 		com = com.strip().replace('\n', '')
 		
@@ -843,7 +858,7 @@ class SqlHand:
 				self.__class__._log.debug(f"grabbed pragma journal_mode '{self.journal_mode}' through '{Conn.key_id}' from {short(self.dbfp)}")
 
 			else:
-				self.__class__._log.error(f"failed grabbing pragma journal_mode from {short(self.dbfp)}")
+				self.__class__._log.error(f"init_DB failed grabbing pragma journal_mode from {short(self.dbfp)}")
 
 		# set journal_mode
 		if self.journal_mode.upper() != "WAL" and not Conn.read_only and Conn.key_id == "main1":
@@ -854,10 +869,11 @@ class SqlHand:
 				self.journal_mode = re[0][0].upper()
 
 			else:
-				self.__class__._log.error(f"failed grabbing pragma journal_mode from {short(self.dbfp)}")
+				self.__class__._log.error(f"init_DB failed grabbing pragma journal_mode from {short(self.dbfp)}")
 
 		# create tables
 		if not Conn.read_only and Conn.key_id == "main1":	
+			error = False
 
 			# runs the sql CREATE TABLE commands
 			for table in self.Scheme.schemes:
@@ -873,7 +889,25 @@ class SqlHand:
 					# do sql to add needed column through exec com
 
 				else:
-					self.__class__._log.error(f"failed initialization for table '{table}' {shortb(self.Scheme.schemes[table].raw_schema)}")
+					self.__class__._log.error(f"init_DB failed initialization for table '{table}' {shortb(self.Scheme.schemes[table].raw_schema)}")
+					error = True
+
+			# create views if present
+			if not error: 
+				if len(self.Scheme.views) > 0:
+					for view in self.Scheme.views:
+						re = self._exec_com(Conn=Conn, com=view)
+
+						if isinstance(re, list):
+							self.__class__._log.debug(f"initialized view in {short(self.dbfp)}")
+
+						else:
+							self.__class__._log.error(f"init_DB failed initialization of a view: {view}")
+
+			else:
+				self.__class__._log.warning(f"init_DB didn't execute possible views because of error in initialization of table(s)")
+
+
 
 
 	def get_conn(self, read_only:bool=True, persist: Union[bool, None]=None) -> Union[Connection, None]:
@@ -904,6 +938,12 @@ class SqlHand:
 			self.__class__._log.debug(f"attempted closing Connection '{Conn.key_id}' to DB {short(Conn.dbfp)}, result: {re}")
 
 
+	def new_dbfp(self, dbfp:str):
+		self.close()
+		# __init__ again, don't give ConnHandler, let it make own for new dbfp
+		self.__init__(self.Scheme, dbfp, self.deformatter, self.formatter)
+
+
 	def __del__(self):
 		# check for attr, in case exception happened in __init__
 		if hasattr(self, "ConnHandler"):	
@@ -913,6 +953,7 @@ class SqlHand:
 
 		# check for attr, in case exception happened in __init__
 		if hasattr(self, "ConnHandler"):	
+						
 			for Conn in self.ConnHandler.conns.values():
 				
 				item = [Conn.key_id]
@@ -944,4 +985,4 @@ class SqlHand:
 					deleted.append(tuple(item))
 		
 		if len(deleted) > 0:
-			self.__class__._log.warning(f"report closing through __del__ function: {deleted}")
+			self.__class__._log.warning(f"attempt closing through __del__ function: {deleted}")

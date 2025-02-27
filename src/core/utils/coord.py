@@ -1,12 +1,13 @@
 # coord
 import math
+from typing import Union
 
 
 class GameCoord:
 
-	def __init__(self, x:int, y:int, wp:str):
+	def __init__(self, x: Union[int, str], y: Union[int, str], wp:str):
 		# transform str coordinates to prorietary coordinate
-		self.coord = (x, y)
+		self.coord = (int(x), int(y))
 		self.wp = wp
 
 

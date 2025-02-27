@@ -1,9 +1,12 @@
 # ships
-import time
+import time, json
+import pandas as pd
+from collections import Counter
 from functools import partial
 from typing import Union
 
 from core.utils import coord, meta, netw
+from core.utils.objmanager import ObjManager
 from core.waypoints import Waypoint
 from utils.list import create
 from utils.sql import strings
@@ -17,48 +20,8 @@ class Ship:
 	inventory = dict()
 
 	@classmethod
-	def api_get_pages(cls, Sess, url:str, re_dec:dict) -> list:
-		data = list()
-
-		# prepare while
-		limit = False
-		page = 0
-		url_p = url+"?page={page}"
-		url = url_p.format(page=2)
-		
-		# pull more pages if meta indicates further pages or upping limit
-		while meta.needs_more_pages(re_dec["meta"]):
-			# go another cycle
-			if not limit and "limit" not in url_p:
-				page = 2
-				re = Sess.get(url=url)
-				
-				url_p = url_p+"&limit={limit}"
-
-			else:
-				if not limit:
-					limit = True
-					url = url_p.format(page=2, limit=20)
-
-				else:
-					page += 1
-					url = url_p.format(page=page, limit=20)
-
-				re = Sess.get(url=url)
-
-			
-			if netw.validate_re(re, cls._log.error, f"api_get_ships needs_more_pages failed to get ships for Fleet '{self.fleet}'"):
-				re_dec = re.Response.json()
-				data.extend(re_dec["data"])
-			else:
-				break
-
-		return data
-
-
-	@classmethod
-	def get_ship_id(cls, SqlHan, ship_sym:str) -> Union[int, None]:
-		re = SqlHan.sel(f"SELECT id FROM ships WHERE symbol=?;", (ship_sym,), _format=False)
+	def get_ship_id(cls, Objman, ship_sym:str) -> Union[int, None]:
+		re = Objman.sel(f"SELECT id FROM ships WHERE symbol=?;", (ship_sym,), _format=False)
 
 		if len(re) > 0:
 
@@ -114,20 +77,27 @@ class Ship:
 		return blueprint
 
 
-	def __init__(self, jj:dict, Sess, Conf, SqlHan, fleet:str):
+	def __init__(self, jj:dict, sdf:list, Objman:ObjManager, fleet:str):
 		self.jj = jj
-		self.Sess = Sess
-		self.Conf = Conf
-		self.SqlHan = SqlHan
+		self.sdf = sdf # is list containig pd.core.frame.DataFrame at idx 0
+		self.Objman = Objman
 		self.fleet = fleet
 
-		self.get_wp_id = partial(Waypoint.get_wp_id, Sess, Conf, SqlHan)
-		self.get_wp_sym = partial(Waypoint.get_wp_sym, SqlHan)
-		self.insert_wp = partial(Waypoint.insert_wp, SqlHan)
-		self.get_ship_id = partial(self.__class__.get_ship_id, SqlHan)
+		self.get_wp_id = partial(Waypoint.get_wp_id, Objman)
+		self.get_wp_sym = partial(Waypoint.get_wp_sym, Objman)
+		self.insert_wp = partial(Waypoint.insert_wp, Objman)
+		self.get_ship_id = partial(self.__class__.get_ship_id, Objman)
+		
+		self._ship_id = None
+		self.has_task = False
+		self.task_id = None
 
+		# if read ship symbol through DB, need to load the rest
 		if self.jj["frame"] is None:
 			self.jj = self.select_ship()
+			
+		# update sdf
+		self.updt_sdf()
 
 		self.__class__._log.info(f"new ship '{self.name}.{self.frame.lower()}' added to fleet '{fleet}'")
 
@@ -138,11 +108,16 @@ class Ship:
 
 	@property
 	def ship_id(self) -> str:
-		return self.__class__.get_ship_id(self.SqlHan, self.name)
+		if self._ship_id is None:
+			self._ship_id =  self.__class__.get_ship_id(self.Objman, self.name)
+		return self._ship_id
 
 	@property
 	def frame(self) -> int:
-		return self.jj["frame"]["name"]
+		if self.jj["frame"] is not None:
+			return self.jj["frame"]["name"]
+		else:
+			return "unknown"
 
 	@property
 	def role(self) -> int:
@@ -151,6 +126,15 @@ class Ship:
 	@property
 	def status(self) -> int:
 		return self.jj["nav"]["status"]
+
+	@property
+	def cooldown_exp(self) -> int:
+		if ("expiration" in self.jj["cooldown"] and
+			self.jj["cooldown"]["expiration"] != 0 and
+			isinstance(self.jj["cooldown"]["expiration"], str)):
+			return int(ISO_to_epoch(self.jj["cooldown"]["expiration"]))
+		else:
+			return 0
 
 	@property
 	def arrival(self) -> int:
@@ -170,15 +154,17 @@ class Ship:
 
 	@property
 	def coordinates(self) -> coord.GameCoord:
-		_t = self.jj["nav"]["route"]["destination"]
-
-		coord = coord.GameCoord(int(_t["x"]), int(_t["y"]), _t["symbol"])
-
-		return coord
+		return coord.GameCoord(int(self.jj["nav"]["route"]["destination"]["x"]),
+								int(self.jj["nav"]["route"]["destination"]["y"]),
+								self.jj["nav"]["route"]["destination"]["symbol"])
 
 	@property
 	def waypoint(self) -> int:
 		return self.jj["nav"]["waypointSymbol"]
+
+	@property
+	def system(self) -> int:
+		return self.jj["nav"]["systemSymbol"]
 
 	@property
 	def engineSpeed(self) -> int:
@@ -188,11 +174,22 @@ class Ship:
 	def cargoInv(self) -> int:
 		return self.jj["cargo"]["inventory"]
 
+	@property
+	def cargoCapa(self) -> int:
+		return self.jj["cargo"]["capacity"]
+
+	@property
+	def cargoUnits(self) -> int:
+		return self.jj["cargo"]["units"]
+
 
 	def _update_state(self, inp:dict):
-		self.jj.update(inp["data"])
+		DB_state = self.jj.copy()
+		new_jj = next(i for i in inp["data"] if i["symbol"] == self.name)
+		self.jj.update(new_jj)
 
-		DB_state = self.select_ship()
+		self.updt_sdf()
+
 		# if DB state not memory state
 		if not DB_state == self.jj:
 			self.update_ship(DB_state)
@@ -219,7 +216,7 @@ class Ship:
 		if coord_b is None:
 			coord_b = self.coordinates
 
-		multiplier = self.Conf.config["NAVIGATION_MULTIPLIER"][mode]
+		multiplier = self.Objman.Conf.config["NAVIGATION_MULTIPLIER"][mode]
 		
 		return round(round(max(1, coord.distance(coord_b, coord))) * (multiplier / self.engineSpeed) + 15)
 
@@ -266,14 +263,14 @@ class Ship:
 			return False
 
 		# we are in orbit and can go now
-		url, data = self.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_WAYPOINT"]
+		url, data = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_WAYPOINT"]
 
 		url = url.format(ShipSymbol=self.name)
 		data.update({"WaypointSymbol": coord.wp})
 
-		re = self.Sess.post(url=url, data=data)
+		suc, re = self.Objman.post(url=url, data=data)
 
-		if re.Response.status_code in (200, 201):
+		if suc:
 			_log.info(f"{self.name}.{self.frame.lower()} on the way to {coord}")
 			
 			# need to update Ship state in self.jj
@@ -293,13 +290,13 @@ class Ship:
 
 
 	def go_orbit(self) -> bool:
-		url = self.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_ORBIT"]
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_ORBIT"]
 
 		url = url.format(ShipSymbol=self.name)
 
-		re = self.Sess.post(url=url, data=dict())
+		suc, re = self.Objman.post(url=url, data=dict())
 
-		if re.Response.status_code in (200, 201):
+		if suc:
 			_log.info(f"{self.name}.{self.frame.lower()} went to orbit {coord}")
 			
 			# need to update Ship state in self.jj
@@ -314,13 +311,13 @@ class Ship:
 
 
 	def go_dock(self) -> bool:
-		url = self.Conf.config["sites"]["SPACETRADERS"]["POST"]["DOCK_SHIP"]
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["DOCK_SHIP"]
 
 		url = url.format(ShipSymbol=self.name)
 
-		re = self.Sess.post(url=url, data=dict())
+		suc, re = self.Objman.post(url=url, data=dict())
 
-		if re.Response.status_code in (200, 201):
+		if suc:
 			_log.info(f"{self.name}.{self.frame.lower()} went to dock {coord}")
 			
 			# need to update Ship state in self.jj
@@ -342,13 +339,13 @@ class Ship:
 			return False
 
 		# we are in orbit, we can extract now
-		url = self.Conf.config["sites"]["SPACETRADERS"]["POST"]["EXTRACT_ORES"]
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["EXTRACT_ORES"]
 
 		url = url.format(miningShipSymbol=self.name)
 
-		re = self.Sess.post(url=url, data=dict())
+		suc, re = self.Objman.post(url=url, data=dict())
 
-		if re.Response.status_code in (200, 201):
+		if suc:
 			_log.info(f"{self.name}.{self.frame.lower()} started extracting ores at {coord}")
 			
 			# need to update Ship state in self.jj
@@ -364,13 +361,13 @@ class Ship:
 
 	def refuel(self) -> bool:
 		# one unit at MARKETPLACE replenishes 100 units in ship tank
-		url = self.Conf.config["sites"]["SPACETRADERS"]["POST"]["REFUEL"]
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REFUEL"]
 
 		url = url.format(ShipSymbol=self.name)
 
-		re = self.Sess.post(url=url, data=dict())
+		suc, re = self.Objman.post(url=url, data=dict())
 
-		if re.Response.status_code in (200, 201):
+		if suc:
 			_log.info(f"{self.name}.{self.frame.lower()} refueled at {coord}")
 			
 			# need to update Ship state in self.jj
@@ -385,14 +382,14 @@ class Ship:
 
 
 	def sell_good(self, good:str, quantity:int) -> bool:
-		url, data = self.Conf.config["sites"]["SPACETRADERS"]["POST"]["SELL"]
+		url, data = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["SELL"]
 
 		url = url.format(ShipSymbol=self.name)
 		data.update({"symbol": good, "units": str(quantity)})
 		
-		re = self.Sess.post(url=url, data=data)
+		suc, re = self.Objman.post(url=url, data=data)
 
-		if re.Response.status_code in (200, 201):
+		if suc:
 			_log.info(f"{self.name}.{self.frame.lower()} sold {quantity} {good} at {self.waypoint} market")
 
 			return True
@@ -446,6 +443,13 @@ class Ship:
 							}
 				})
 
+			if "expiration" in ship_data["cooldown"] and isinstance(ship_data["cooldown"]["expiration"], str):
+				cd_exp = ISO_to_epoch(ship_data["cooldown"]["expiration"])
+			elif "expiration" in ship_data["cooldown"] and isinstance(ship_data["cooldown"]["expiration"], Union[float, int]):
+				cd_exp = ship_data["cooldown"]["expiration"]
+			else:
+				cd_exp = 0
+
 			sptr_ship = {
 							"symbol": ship_data["symbol"],
 							"systemsymbol": ship_data["nav"]["systemSymbol"],
@@ -468,7 +472,7 @@ class Ship:
 							"fuel_cons_time": ISO_to_epoch(ship_data["fuel"]["consumed"]["timestamp"]),
 							"cd_shipsym": ship_data["cooldown"]["shipSymbol"],	# watch if it differs ever from "symbol"
 							"cd_secs": ship_data["cooldown"]["totalSeconds"],
-							"cd_expiration": ISO_to_epoch(ship_data["cooldown"]["expiration"]) if "expiration" in ship_data["cooldown"] else 0,
+							"cd_expiration": cd_exp,
 							"frame": ship_data["frame"]["symbol"],
 							"frame_condition": ship_data["frame"]["condition"],
 							"frame_integrity": ship_data["frame"]["integrity"],
@@ -487,7 +491,7 @@ class Ship:
 							"updated": int(time.time())
 			}
 
-			if self.SqlHan.ins("ships", list(sptr_ship.values()), extras=extras):
+			if self.Objman.ins("ships", list(sptr_ship.values()), extras=extras):
 				# get the ship id
 				ship_id = self.get_ship_id(ship_data["symbol"])
 
@@ -538,7 +542,7 @@ class Ship:
 			com = f"SELECT id FROM modules WHERE symbol=?;"
 			com_var = (module["symbol"],)
 
-			re = self.SqlHan.sel(com, com_var, _format=False)
+			re = self.Objman.sel(com, com_var, _format=False)
 
 			if len(re) == 0:
 				# append time for updated column
@@ -550,13 +554,13 @@ class Ship:
 				if "capacity" not in module:
 						vals.insert(3, 0)
 
-				if self.SqlHan.ins("modules", vals):
+				if self.Objman.ins("modules", vals):
 					self.__class__._log.info("new ship module '{}' added".format(module["symbol"]))
 
-					re = self.SqlHan.sel(com, com_var, _format=False)
+					re = self.Objman.sel(com, com_var, _format=False)
 					module_id = re[0][0]
 
-					if not self.SqlHan.ins("_ship_modules", [ship_sym_id, module_id]):
+					if not self.Objman.ins("_ship_modules", [ship_sym_id, module_id], no_duplicates=False):
 						self.__class__._log.error(f"handle_ship_modules failed insert in '_ship_modules': {[ship_sym_id, module_id]}")
 						
 						return False
@@ -569,16 +573,16 @@ class Ship:
 			else:
 				module_id = re[0][0]
 
-				com = f"SELECT * FROM _ship_modules WHERE ship_sym_id=? AND modules_id=?;"
-				com_var = (ship_sym_id, module_id)
+				# com = f"SELECT * FROM _ship_modules WHERE ship_sym_id=? AND modules_id=?;"
+				# com_var = (ship_sym_id, module_id)
 
-				re = self.SqlHan.sel(com, com_var, _format=False)
+				# re = self.Objman.sel(com, com_var, _format=False)
 
-				if len(re) == 0:
-					if not self.SqlHan.ins("_ship_modules", [ship_sym_id, module_id]):
-						self.__class__._log.error(f"handle_ship_modules failed after module already known insert in '_ship_modules': {[ship_sym_id, module_id]}")
-						
-						return False
+				# if len(re) == 0:
+				if not self.Objman.ins("_ship_modules", [ship_sym_id, module_id], no_duplicates=False):
+					self.__class__._log.error(f"handle_ship_modules failed after module already known insert in '_ship_modules': {[ship_sym_id, module_id]}")
+					
+					return False
 
 		return True
 
@@ -596,7 +600,7 @@ class Ship:
 			com = f"SELECT id FROM mounts WHERE symbol=?;"
 			com_var = (mount["symbol"],)
 
-			re = self.SqlHan.sel(com, com_var, _format=False)
+			re = self.Objman.sel(com, com_var, _format=False)
 
 			if len(re) == 0:				
 				# append time for updated column
@@ -610,13 +614,13 @@ class Ship:
 				else:
 					vals[4] = ', '.join(mount["deposits"])
 
-				if self.SqlHan.ins("mounts", vals):
+				if self.Objman.ins("mounts", vals):
 					self.__class__._log.info("new ship mount '{}' added".format(mount["symbol"]))
 
-					re = self.SqlHan.sel(com, com_var, _format=False)
+					re = self.Objman.sel(com, com_var, _format=False)
 					mount_id = re[0][0]
 
-					if not self.SqlHan.ins("_ship_mounts", [ship_sym_id, mount_id]):
+					if not self.Objman.ins("_ship_mounts", [ship_sym_id, mount_id], no_duplicates=False):
 						self.__class__._log.error(f"handle_ship_mounts failed insert in '_ship_mounts': {[ship_sym_id, mount_id]}")
 
 						return False
@@ -629,16 +633,16 @@ class Ship:
 			else:
 				mount_id = re[0][0]
 
-				com = f"SELECT * FROM _ship_mounts WHERE ship_sym_id=? AND mounts_id=?;"
-				com_var = (ship_sym_id, mount_id)
+				# com = f"SELECT * FROM _ship_mounts WHERE ship_sym_id=? AND mounts_id=?;"
+				# com_var = (ship_sym_id, mount_id)
 
-				re = self.SqlHan.sel(com, com_var, _format=False)
+				# re = self.Objman.sel(com, com_var, _format=False)
 
-				if len(re) == 0:
-					if not self.SqlHan.ins("_ship_mounts", [ship_sym_id, mount_id]):
-						self.__class__._log.error(f"handle_ship_mounts failed after mount already known insert in '_ship_mounts': {[ship_sym_id, mount_id]}")
-						
-						return False
+				# if len(re) == 0:
+				if not self.Objman.ins("_ship_mounts", [ship_sym_id, mount_id], no_duplicates=False):
+					self.__class__._log.error(f"handle_ship_mounts failed after mount already known insert in '_ship_mounts': {[ship_sym_id, mount_id]}")
+					
+					return False
 
 		return True
 
@@ -656,7 +660,7 @@ class Ship:
 			com = f"SELECT id FROM _goods WHERE goods=?;"
 			com_var = (good["symbol"],)
 
-			re = self.SqlHan.sel(com, com_var, _format=False)
+			re = self.Objman.sel(com, com_var, _format=False)
 
 			# unknown good needs to be inserted into _goods
 			if len(re) == 0:
@@ -665,7 +669,7 @@ class Ship:
 				# adding time for updated column
 				vals.append(int(time.time()))
 
-				if not self.SqlHan.ins("_goods", vals):
+				if not self.Objman.ins("_goods", vals):
 					self.__class__._log.error(f"insert_cargo failed insert of new good '{good["symbol"]}'")
 
 					return False
@@ -673,12 +677,12 @@ class Ship:
 				else:
 					self.__class__._log.info("new good '{}' added".format(good["symbol"]))
 
-				re = self.SqlHan.sel(com, com_var, _format=False)
+				re = self.Objman.sel(com, com_var, _format=False)
 
 			# known good needs to be inserted into _ship_cargo
 			good_id = re[0][0]
 
-			if not self.SqlHan.ins("_ship_cargo", [good_id, ship_sym_id, good["units"], int(time.time())]):
+			if not self.Objman.ins("_ship_cargo", [good_id, ship_sym_id, good["units"], int(time.time())]):
 				self.__class__._log.error("insert_cargo failed insert in '_ship_cargo': {}".format([good_id, ship_sym_id, good["units"], int(time.time())]))
 				
 				return False
@@ -698,10 +702,12 @@ class Ship:
 		com_var = (self.name,)
 
 		# select ship main info
-		re = self.SqlHan.sel(com, com_var, _format=False)
+		re = self.Objman.sel(com, com_var, _format=False)
 
 		if len(re) > 0:
 			re = re[0]
+
+			role = re[32]
 
 			ship_data = {}
 			ship_data["symbol"] = re[0]
@@ -714,7 +720,7 @@ class Ship:
 			ship_data["nav"]["route"]["origin"] = {}
 			ship_data["nav"]["route"]["origin"]["symbol"] = self.get_wp_sym(re[3])
 			
-			re_ = self.SqlHan.sel(f"SELECT wp_type, systemsymbol, coords FROM waypoints WHERE wp_symbol=?", (ship_data["nav"]["route"]["origin"]["symbol"],), _format=False)
+			re_ = self.Objman.sel(f"SELECT wp_type, systemsymbol, coords FROM waypoints WHERE wp_symbol=?", (ship_data["nav"]["route"]["origin"]["symbol"],), _format=False)
 			if len(re_) > 0:
 				ship_data["nav"]["route"]["origin"]["type"] = re_[0][0]
 				ship_data["nav"]["route"]["origin"]["systemSymbol"] = re_[0][1]
@@ -735,7 +741,7 @@ class Ship:
 			ship_data["nav"]["route"]["destination"] = {}
 			ship_data["nav"]["route"]["destination"]["symbol"] = self.get_wp_sym(re[4])
 			
-			re_ = self.SqlHan.sel(f"SELECT wp_type, systemsymbol, coords FROM waypoints WHERE wp_symbol=?", (ship_data["nav"]["route"]["destination"]["symbol"],), _format=False)
+			re_ = self.Objman.sel(f"SELECT wp_type, systemsymbol, coords FROM waypoints WHERE wp_symbol=?", (ship_data["nav"]["route"]["destination"]["symbol"],), _format=False)
 			if len(re_) > 0:
 				ship_data["nav"]["route"]["destination"]["type"] = re_[0][0]
 				ship_data["nav"]["route"]["destination"]["systemSymbol"] = re_[0][1]
@@ -783,7 +789,7 @@ class Ship:
 			ship_data["frame"] = {}
 			ship_data["frame"]["symbol"] = re[22]
 			
-			re_ = self.SqlHan.sel(f"SELECT name, description, moduleSlots, mountPoints, fuelCapa, reqi_power, reqi_crew FROM _frame WHERE frame=?", (ship_data["frame"]["symbol"],), _format=False)
+			re_ = self.Objman.sel(f"SELECT name, description, moduleSlots, mountPoints, fuelCapa, reqi_power, reqi_crew FROM _frame WHERE frame=?", (ship_data["frame"]["symbol"],), _format=False)
 			if len(re_) > 0:
 				ship_data["frame"]["name"] = re_[0][0]
 				ship_data["frame"]["description"] = re_[0][1]
@@ -811,7 +817,7 @@ class Ship:
 			ship_data["reactor"] = {}
 			ship_data["reactor"]["symbol"] = re[25]
 
-			re_ = self.SqlHan.sel(f"SELECT name, description, power_output, reqi_crew FROM _reactor WHERE reactor=?", (ship_data["reactor"]["symbol"],), _format=False)
+			re_ = self.Objman.sel(f"SELECT name, description, power_output, reqi_crew FROM _reactor WHERE reactor=?", (ship_data["reactor"]["symbol"],), _format=False)
 			if len(re_) > 0:
 				ship_data["reactor"]["name"] = re_[0][0]
 				ship_data["reactor"]["description"] = re_[0][1]
@@ -832,7 +838,7 @@ class Ship:
 			ship_data["engine"] = {}
 			ship_data["engine"]["symbol"] = re[28]
 			
-			re_ = self.SqlHan.sel(f"SELECT name, description, speed, reqi_power, reqi_crew FROM _engine WHERE engine=?", (ship_data["engine"]["symbol"],), _format=False)
+			re_ = self.Objman.sel(f"SELECT name, description, speed, reqi_power, reqi_crew FROM _engine WHERE engine=?", (ship_data["engine"]["symbol"],), _format=False)
 			if len(re_) > 0:
 				ship_data["engine"]["name"] = re_[0][0]
 				ship_data["engine"]["description"] = re_[0][1] 
@@ -853,21 +859,21 @@ class Ship:
 			ship_data["engine"]["requirements"]["power"] = reqi_power
 			ship_data["engine"]["requirements"]["crew"] = reqi_crew
 				
-			re_ = self.select_ship_modules(ship_data["symbol"])
+			re_ = self.select_ship_modules(ship_data["symbol"], role=role)
 			ship_data["modules"] = re_
 
-			re_ = self.select_ship_mounts(ship_data["symbol"])
+			re_ = self.select_ship_mounts(ship_data["symbol"], role=role)
 			ship_data["mounts"] = re_
 
 			ship_data["registration"] = {}
 			ship_data["registration"]["name"] = re[31]
 			ship_data["registration"]["factionSymbol"] = re[36]
-			ship_data["registration"]["role"] = re[32]
+			ship_data["registration"]["role"] = role
 
 			ship_data["cargo"] = {}
 			ship_data["cargo"]["capacity"] = re[33]
 			ship_data["cargo"]["units"] = re[34]
-			ship_data["cargo"]["inventory"] = self.select_cargo()
+			ship_data["cargo"]["inventory"] = self.select_cargo(role=role)
 			fleet_id = re[35]
 
 			return ship_data
@@ -878,10 +884,14 @@ class Ship:
 			return dict()
 
 
-	def select_ship_modules(self, ship_sym:str) -> list:
+	def select_ship_modules(self, ship_sym:str, role:str='') -> list:
+		# if role is SATELLITE return empty list
+		if role == "SATELLITE":
+			return list()
+
 		com = f"SELECT modules_id FROM _ship_modules WHERE ship_sym_id=?;"
 		com_var = (self.get_ship_id(ship_sym),)
-		re = self.SqlHan.sel(com, com_var, _format=False)
+		re = self.Objman.sel(com, com_var, _format=False)
 
 		if len(re) > 0:
 			re = [i[0] for i in re]
@@ -890,11 +900,15 @@ class Ship:
 			for id_ in re:
 				com = f"SELECT symbol, name, description, capacity, reqi_crew, reqi_power, reqi_slots FROM modules WHERE id=?;"
 				com_var = (id_,)
-				re = self.SqlHan.sel(com, com_var, _format=False)
+				re = self.Objman.sel(com, com_var, _format=False)
 
 				if len(re) > 0:
 					re = re[0]
-					re_list.append({k: v for k, v in zip(('symbol', 'name', 'description', 'capacity', 'reqi_crew', 'reqi_power', 'reqi_slots'), re)}) 
+					pre_dict = {k: v for k, v in zip(('symbol', 'name', 'description', 'capacity', 'reqi_crew', 'reqi_power', 'reqi_slots'), re[:4])}
+					reqi = {k: v for k, v in zip(('crew', 'power', 'slots'), re[4:])}
+					pre_dict.update((('requirements', reqi),))
+
+					re_list.append(pre_dict) 
 
 				else:
 					self.__class__._log.error(f"select_ship_modules has not indicated module with id {id_} in 'modules'")
@@ -909,10 +923,14 @@ class Ship:
 			return list()
 
 
-	def select_ship_mounts(self, ship_sym:str) -> list:
+	def select_ship_mounts(self, ship_sym:str, role:str='') -> list:
+		# if role is SATELLITE return empty list
+		if role == "SATELLITE":
+			return list()
+
 		com = f"SELECT mounts_id FROM _ship_mounts WHERE ship_sym_id=?;"
 		com_var = (self.get_ship_id(ship_sym),)
-		re = self.SqlHan.sel(com, com_var, _format=False)
+		re = self.Objman.sel(com, com_var, _format=False)
 
 		if len(re) > 0:
 			re = [i[0] for i in re]
@@ -921,7 +939,7 @@ class Ship:
 			for id_ in re:
 				com = f"SELECT symbol, name, description, strength, deposits, reqi_crew, reqi_power FROM mounts WHERE id=?;"
 				com_var = (id_,)
-				re = self.SqlHan.sel(com, com_var, _format=False)
+				re = self.Objman.sel(com, com_var, _format=False)
 
 				if len(re) > 0:
 					re = re[0]
@@ -943,36 +961,42 @@ class Ship:
 			return list()
 
 
-	def select_cargo(self) -> list:
+	def select_cargo(self, role:str='') -> list:
+		# if role is SATELLITE return empty list
+		if role == "SATELLITE":
+			return list()
+
 		com = f"SELECT goods_id, units FROM _ship_cargo WHERE ship_sym_id=?;"
 		com_var = (self.ship_id,)
-		re = self.SqlHan.sel(com, com_var, _format=False)
+		re_cargo = self.Objman.sel(com, com_var, _format=False)
 
-		if len(re) > 0:
-			goods_inv = list()
+		if len(re_cargo) > 0:
+			
 
-			com_var = tuple(i[0] for i in re)
+			com_var = tuple(i[0] for i in re_cargo)
 			com = f"SELECT id, goods, name, description FROM _goods WHERE {create.list_or_same_col(com_var, "id")}"
 
-			re_goods = self.SqlHan.sel(com, com_var, _format=False)
+			re_goods = self.Objman.sel(com, com_var, _format=False)
 
 			if len(re_goods) == 0:
 				self.__class__._log.error(f"select_cargo failed selecting from '_goods' ids {com_var}")
 
 				return list()
 
-			good_sym_li = list((i[1], i[0]) for i in re_goods)
+			# swap order to have symbol/good as first order for sorting 
+			good_sym_li = list((i[1], i[0], i[2], i[3]) for i in re_goods)
 			# sort for alphabetical order
 			good_sym_li.sort()
 
-			re_dict = {i[0]: i[1] for i in re}
-			re_goods_dict = {i[0]: [i[1], i[2], i[3]] for i in re}
+			re_cargo_dict = {str(i[0]): i[1] for i in re_cargo}
+			# swap back key to be the id, now that it is alphabetical
+			re_goods_dict = {str(i[1]): [i[0], i[2], i[3]] for i in good_sym_li}
 
 			cargo_inv = list({
 							"symbol": i[0],
-							"name": re_goods_dict[i[1]][1],
-							"description": re_goods_dict[i[1]][2],
-							"units": re_dict[i[1]]
+							"name": re_goods_dict[str(i[1])][1],
+							"description": re_goods_dict[str(i[1])][2],
+							"units": re_cargo_dict[str(i[1])]
 						} for i in good_sym_li)
 
 			# returning sorted dict according to alphabet of symbols
@@ -980,34 +1004,95 @@ class Ship:
 			return cargo_inv
 
 		else:
-			self.__class__._log.error(f"select_cargo failed selecting from '_ship_cargo' ids for ship_id {com_var}")
+			self.__class__._log.debug(f"select_cargo '{self.name}.{self.frame.lower()}' has no cargo in '_ship_cargo' for ship_id {com_var}")
 
 			return list()
 
 
 	def del_ship_modules(self, modules:list) -> bool:
-		# modules are a list of dicts with specific modules
+		# modules are a list of module symbols for deletion
+		# multiples are meant to be deleted multiple times
 		
 		# get ids of the modules
-		com = f"SELECT id FROM modules WHERE {create.list_or_same_col(modules, "symbol")};"
+		com = f"SELECT id, symbol FROM modules WHERE {create.list_or_same_col(modules, "symbol")};"
 		com_var = tuple(modules)
 		
-		re_ = self.SqlHan.sel(com, com_var, _format=False)
+		re_ = self.Objman.sel(com, com_var, _format=False)
 		if len(re_) == 0:
 			self.__class__._log.error(f"del_ship_modules called, but failed selection of id in 'modules' of given modules: {com_var}")
 
 			return False
 
 		else:
-			mount_ids = [i[0] for i in re_]
-			del_mount_ids = {'modules_id': v for v in mount_ids}
+			module_ids = {i[1]: i[0] for i in re_}
+			del_module_ids = {'modules_id': module_ids[v] for v in module_ids}
 
-			com = f"DROP FROM _ship_modules WHERE ({create.list_or_same_col(list(del_mount_ids.values()), "modules_id")}) AND ship_sym_id=?;"
- 
-			vals = list(del_mount_ids.values())
+			# first select to make sure we don't delete two (or more) modules even though
+			# we only want to delete one (according to count of argument modules)
+			com = f"SELECT * FROM _ship_modules WHERE ({create.list_or_same_col(list(del_module_ids.values()), "modules_id")}) AND ship_sym_id=?;"
+			vals = list(del_module_ids.values())
 			vals.append(self.ship_id)
 
-			re_ = self.SqlHan.del_simple(com, tuple(vals))
+			re = self.Objman.sel(com, tuple(vals))
+
+			if len(re) == 0:
+				self.__class__._log.error(f"del_ship_modules failed selection of * in '_ship_modules' for list of deletion candidates: '{com}, {tuple(vals)}'")
+
+				return False
+
+			# split 3 columns
+			li_ids = list()
+			li_modules_ids = list()
+			li_modules_sym = list()
+
+			for entry in re:
+				a, _, c = entry
+				li_ids.append(a)
+				li_modules_ids.append(c)
+				sym = [i for i in module_ids if module_ids[i] == c]
+				li_modules_sym.append(sym[0])
+
+			# quick check if duplicates through making set
+			if len(li_modules_ids) != set(li_modules_ids):
+					
+				# only valid case is when module symbol is less times in modules
+				# than it is in li_modules_sym, where all entries pop up for the ship
+				# -> so we only have to delete some indx off all 3 lists and then
+				# use the (row)id to delete less than all duplicates for the ship
+				less = list()
+				for mod in modules:
+					if modules.count(mod) < li_modules_sym.count(mod):
+						less.append(mod)
+					elif modules.count(mod) == li_modules_sym.count(mod):
+						pass
+					else:
+						self.__class__._log.error("del_ship_modules deep error case with more occurances of module in modules than in the DB for that ship")
+
+						return False
+
+				# if no less cases, we can do the easy way without id
+				if not len(less) == 0:
+					# here we need to use WHERE id to only delete the amount of module(s) we have in argument modules
+					for l in less:
+						while modules.count(l) < li_modules_sym.count(l):
+							indx = li_modules_sym.index(l)
+							# now pop out of each of the 4 lists one entry
+							# if we only pop out of ids and there is another occurence
+							# the 2 lists are out of sync
+							li_ids.pop(indx)
+							li_modules_sym.pop(indx)
+
+					# now we can uniquely use li_ids to match the right rows with WHERE
+					com = f"DELETE FROM _ship_modules WHERE {create.list_or_same_col(li_ids, "id")};"
+
+					re_ = self.Objman.del_simple(com, tuple(li_ids))
+
+					return re_
+				
+
+			com = f"DELETE FROM _ship_modules WHERE ({create.list_or_same_col(list(del_module_ids.values()), "modules_id")}) AND ship_sym_id=?;"
+
+			re_ = self.Objman.del_simple(com, tuple(vals))
 
 			return re_
 
@@ -1015,28 +1100,89 @@ class Ship:
 
 
 	def del_ship_mounts(self, mounts:list) -> bool:
-		# mounts are a list of dicts with specific mounts
+		# mounts are a list of mount symbols for deletion
+		# multiples are meant to be deleted multiple times
 		
 		# get ids of the mounts
 		com = f"SELECT id FROM mounts WHERE {create.list_or_same_col(mounts, "symbol")};"
 		com_var = tuple(mounts)
 		
-		re_ = self.SqlHan.sel(com, com_var, _format=False)
+		re_ = self.Objman.sel(com, com_var, _format=False)
 		if len(re_) == 0:
 			self.__class__._log.error(f"del_ship_mounts called, but failed selection of id in 'mounts' of given mounts: {com_var}")
 
 			return False
 
 		else:
-			mount_ids = [i[0] for i in re_]
-			del_mount_ids = {'mounts_id': v for v in mount_ids}
+			mount_ids = {i[1]: i[0] for i in re_}
+			del_mount_ids = {'mounts_id': mount_ids[v] for v in mount_ids}
 
-			com = f"DROP FROM _ship_mounts WHERE ({create.list_or_same_col(list(del_mount_ids.values()), "mounts_id")}) AND ship_sym_id=?;"
- 
+			# first select to make sure we don't delete two (or more) mounts even though
+			# we only want to delete one (according to count of argument mounts)
+			com = f"SELECT * FROM _ship_mounts WHERE ({create.list_or_same_col(list(del_mount_ids.values()), "mounts_id")}) AND ship_sym_id=?;"
 			vals = list(del_mount_ids.values())
 			vals.append(self.ship_id)
 
-			re_ = self.SqlHan.del_simple(com, tuple(vals))
+			re = self.Objman.sel(com, tuple(vals))
+
+			if len(re) == 0:
+				self.__class__._log.error(f"del_ship_mounts failed selection of * in '_ship_mounts' for list of deletion candidates: '{com}, {tuple(vals)}'")
+
+				return False
+
+			# split 3 columns
+			li_ids = list()
+			li_mounts_ids = list()
+			li_mounts_sym = list()
+
+			for entry in re:
+				a, _, c = entry
+				li_ids.append(a)
+				li_mounts_ids.append(c)
+				sym = [i for i in mount_ids if mount_ids[i] == c]
+				li_mounts_sym.append(sym[0])
+
+			# quick check if duplicates through making set
+			if len(li_mounts_ids) != set(li_mounts_ids):
+					
+				# only valid case is when mount symbol is less times in mounts
+				# than it is in li_mounts_sym, where all entries pop up for the ship
+				# -> so we only have to delete some indx off all 3 lists and then
+				# use the (row)id to delete less than all duplicates for the ship
+				less = list()
+				for mnt in mounts:
+					if mounts.count(mnt) < li_mounts_sym.count(mnt):
+						less.append(mod)
+					elif mounts.count(mnt) == li_mounts_sym.count(mnt):
+						pass
+					else:
+						self.__class__._log.error("del_ship_mounts deep error case with more occurances of mount in mounts than in the DB for that ship")
+
+						return False
+
+				# if no less cases, we can do the easy way without id
+				if not len(less) == 0:
+					# here we need to use WHERE id to only delete the amount of mount(s) we have in argument mounts
+					for l in less:
+						while mounts.count(l) < li_mounts_sym.count(l):
+							indx = li_mounts_sym.index(l)
+							# now pop out of each of the 4 lists one entry
+							# if we only pop out of ids and there is another occurence
+							# the 2 lists are out of sync
+							li_ids.pop(indx)
+							li_mounts_sym.pop(indx)
+
+					# now we can uniquely use li_ids to match the right rows with WHERE
+					com = f"DELETE FROM _ship_mounts WHERE {create.list_or_same_col(li_ids, "id")};"
+
+					re_ = self.Objman.del_simple(com, tuple(li_ids))
+
+					return re_
+				
+
+			com = f"DELETE FROM _ship_mounts WHERE ({create.list_or_same_col(list(del_mount_ids.values()), "mounts_id")}) AND ship_sym_id=?;"
+
+			re_ = self.Objman.del_simple(com, tuple(vals))
 
 			return re_
 
@@ -1049,9 +1195,12 @@ class Ship:
 			return self.jj[key] == DB_state[key]
 		
 		# get differences on top level
-		updateable = ("nav", "crew", "fuel", "cooldown", "frame", "reactor", "enigne", 
+		updateable = ("nav", "crew", "fuel", "cooldown", "frame", "reactor", "engine", 
 						"modules", "mounts", "cargo")
 		diff = [i for i in updateable if not _equal(i)]
+
+		if len(diff) == 0:
+			return False
 
 		direct_updt = dict()
 
@@ -1123,28 +1272,48 @@ class Ship:
 				})
 
 		if "modules" in diff:
-			set_jjmod = set(i["symbol"] for i in self.jj["modules"])
-			set_DBmod = set(i["symbol"] for i in DB_state["modules"])
-			# also getting rid of duplicates
+			# need to keep duplicates and compare with them
+			li_jjmod = Counter(list(i["symbol"] for i in self.jj["modules"]))
+			li_DBmod = Counter(list(i["symbol"] for i in DB_state["modules"]))
 
-			new_ins = sorted(list(set_jjmod-set_DBmod))
-			old_del = sorted(list(set_DBmod-set_jjmod))
+			new_ins = li_jjmod - li_DBmod
+			old_del = li_DBmod - li_jjmod
+			new_ins = list(new_ins.elements())
+			old_del = list(old_del.elements())
+			new_ins.sort()
+			old_del.sort()
 
+			new_ins_dictlist = list()
+			for item in new_ins:
+				new_ins_dictlist.append(next(i for i in self.jj["modules"] if i["symbol"] == item))
+
+			# delete is being done through a list of symbols
 			if len(old_del) > 0 and not self.del_ship_modules(old_del):
 				self.__class__._log.error(f"update_ship {self.name}.{self.frame.lower()} failed deleting old modules {old_del}")
-			if len(new_ins) > 0 and not self.insert_ship_modules(new_ins, self.ship_id):
+			# insert is being done through a list of dictionaries, containing all info
+			if len(new_ins) > 0 and not self.insert_ship_modules(new_ins_dictlist, self.ship_id):
 				self.__class__._log.error(f"update_ship {self.name}.{self.frame.lower()} failed updating new modules {new_ins}")
 
 		if "mounts" in diff:
-			set_jjmnt = set(i["symbol"] for i in self.jj["mounts"])
-			set_DBmnt = set(i["symbol"] for i in DB_state["mounts"])
-			# also getting rid of duplicates
+			# need to keep duplicates and compare with them
+			li_jjmnt = Counter(list(i["symbol"] for i in self.jj["mounts"]))
+			li_DBmnt = Counter(list(i["symbol"] for i in DB_state["mounts"]))
 
-			new_ins = sorted(list(set_jjmnt-set_DBmnt))
-			old_del = sorted(list(set_DBmnt-set_jjmnt))
+			new_ins = li_jjmnt - li_DBmnt
+			old_del = li_DBmnt - li_jjmnt
+			new_ins = list(new_ins.elements())
+			old_del = list(old_del.elements())
+			new_ins.sort()
+			old_del.sort()
+
+			new_ins_dictlist = list()
+			for item in new_ins:
+				new_ins_dictlist.append(next(i for i in self.jj["mounts"] if i["symbol"] == item))
 			
+			# delete is being done through a list of symbols
 			if len(old_del) > 0 and not self.del_ship_mounts(old_del):
 				self.__class__._log.error(f"update_ship {self.name}.{self.frame.lower()} failed deleting old mounts {old_del}")
+			# insert is being done through a list of dictionaries, containing all info
 			if len(new_ins) > 0 and not self.insert_ship_mounts(new_ins, self.ship_id):
 				self.__class__._log.error(f"update_ship {self.name}.{self.frame.lower()} failed updating new mounts {new_ins}")
 
@@ -1158,11 +1327,10 @@ class Ship:
 				if not self.update_cargo(self.jj["cargo"]["inventory"], self.ship_id):
 					self.__class__._log.error("update_ship {}.{} failed updating cargo {}".format(self.name, self.frame.lower(), self.jj["cargo"]["inventory"]))		
 			
-		if len(diff) > 0:
-			direct_updt.update({"updated": int(time.time())})
+		direct_updt.update({"updated": int(time.time())})
 
 		# exec direct_updt
-		if not self.SqlHan.updt(table="ships", cols=list(direct_updt.keys()), vals=list(direct_updt.values()), unique={"id": self.ship_id}):
+		if not self.Objman.updt(table="ships", cols=list(direct_updt.keys()), vals=list(direct_updt.values()), unique={"id": self.ship_id}):
 			self.__class__._log.error("update_ship failed updating {}.{} with direct_updt data on changes in {}".format(self.name, self.frame.lower(), diff))
 
 		return True
@@ -1173,18 +1341,30 @@ class Ship:
 		
 		# get ids of the goods
 		cargo_symbols = [i["symbol"] for i in cargo_inv]
-		com = f"SELECT id, goods FROM _goods WHERE {create.list_or_same_col(cargo_symbols, "goods")};"
+		# selecting name and description, to also be able to update in case they are None/NULL
+		com = f"SELECT id, goods, name, description FROM _goods WHERE {create.list_or_same_col(cargo_symbols, "goods")};"
 		com_var = tuple(cargo_symbols)
 		
-		re_ = self.SqlHan.sel(com, com_var, _format=False)
+		re_ = self.Objman.sel(com, com_var, _format=False)
 		if len(re_) == 0:
 			self.__class__._log.error(f"update_cargo failed selection of id in '_goods' of given cargo symbols: {com_var}")
 
 			return False
 
+		# update_goods for goods that don't have complete data
+		to_update = [i[1] for i in re_ if None in (i[2], i[3])]
+		goods_update = {}
+		for good in re_:
+			if good[1] in to_update:
+				# compose keys as column names and values as cells
+				goods_update.update({"name": good[2], "description": good[3], "updated": int(time.time())})
+		
+		if not self.Objman.updt(table="_goods", cols=list(goods_update.keys()), vals=list(goods_update.values()), unique={"goods": i for i in to_update}):
+			self.__class__._log.error(f"update_cargo failed updating name, description of goods {to_update}")
+
 		goods_ids = [i[0] for i in re_]
 		# check if all goods from cargo_inv are in table _goods
-		if not len(goods_ids) == len(cargo_inv):
+		if len(goods_ids) != len(cargo_inv):
 			# need to insert some goods into table _goods first
 			re_goods_sym = set(i[1] for i in re_)
 			to_insert = sorted(list(set(cargo_symbols)-re_goods_sym))
@@ -1194,14 +1374,14 @@ class Ship:
 
 				return False
 
-			re_ = self.SqlHan.sel(com, com_var, _format=False)
+			re_ = self.Objman.sel(com, com_var, _format=False)
 
 		# make dict with inv_goods_symbol and values inv_goods_id
 		di_inv_goods = {i[1]: i[0] for i in re_}
 
 		for good in cargo_inv:
 
-			re = self.SqlHan.sel("SELECT units FROM _ship_cargo WHERE ship_sym_id=? AND goods_id=?", (self.ship_id, di_inv_goods[good["symbol"]]), _format=False)
+			re = self.Objman.sel("SELECT units FROM _ship_cargo WHERE ship_sym_id=? AND goods_id=?", (self.ship_id, di_inv_goods[good["symbol"]]), _format=False)
 
 			# re has 0 len if good is not in there
 			if len(re) == 0:
@@ -1218,9 +1398,47 @@ class Ship:
 				uniq = {"ship_sym_id": self.ship_id, "goods_id": di_inv_goods[good["symbol"]]}
 
 				# update units amount
-				if not self.SqlHan.updt(table="_ship_cargo", cols=cols, vals=vals, unique=uniq):
+				if not self.Objman.updt(table="_ship_cargo", cols=cols, vals=vals, unique=uniq):
 					self.__class__._log.error("update_cargo failed updating units of {} for {}.{}".format(good["symbol"], self.name, self.ship_id))
 					
 					return False
 
 		return True
+
+
+	def updt_sdf(self) -> bool:
+		_di = self.jj.copy()
+		
+		# update dict for sdf
+		_di.update({
+						"modules": [i["symbol"] for i in _di["modules"]],
+						"mounts": [i["symbol"] for i in _di["mounts"]],
+						"has_task": self.has_task,
+						"task_id": self.task_id,
+						"ship_id": self.ship_id
+
+					})
+		# also update all str timestamps to epoch
+		_di["nav"]["route"]["arrival"] = ISO_to_epoch(_di["nav"]["route"]["arrival"])
+		_di["nav"]["route"]["departureTime"] = ISO_to_epoch(_di["nav"]["route"]["departureTime"])
+		_di["fuel"]["consumed"]["timestamp"] = ISO_to_epoch(_di["fuel"]["consumed"]["timestamp"])
+		if "expiration" in _di and isinstance(_di["cooldown"]["expiration"], str):
+			_di["cooldown"]["expiration"] = ISO_to_epoch(_di["cooldown"]["expiration"])
+		elif "expiration" not in _di:
+			_di["cooldown"]["expiration"] = 0
+
+		df = pd.json_normalize(_di)
+
+		if self.sdf is not None and "symbol" in self.sdf[0].columns and any(self.sdf[0].symbol.str.fullmatch(self.name)):
+			self.sdf[0].loc[self.sdf[0]["symbol"] == self.name] = df.loc[df['symbol'] == self.name]
+		elif self.sdf is not None and "symbol" in self.sdf[0].columns:
+			self.sdf[0] = pd.concat([self.sdf[0], df])
+		else:
+			self.sdf[0] = df
+
+		return True
+
+
+	def has_mount(self, module:str) -> bool:
+
+		return any(module in i["symbol"] for i in self.jj["mounts"])

@@ -79,6 +79,8 @@ class HttpSession:
 			if not self.private:
 				self.SessR.headers['User-Agent'] = f'python-requests/{requests.__version__}'
 
+			self.SessR._open_status = True
+
 			self.__class__._log.info("requests Session instantiated with _SID '%(SessR_SID)s'", {"SessR_SID": self.SessR._SID, "_msg_args": ["arg", "value"]})
 		
 		elif lib == "hpx":
@@ -94,6 +96,8 @@ class HttpSession:
 			self._set_headers(self.SessH)
 			if not self.private:
 				self.SessH.headers['User-Agent'] = f'python-httpx/{httpx.__version__}'
+
+			self.SessH._open_status = True
 
 			self.__class__._log.info("httpx Session instantiated with _SID '%(SessH_SID)s'", {"SessH_SID": self.SessH._SID, "_msg_args": ["arg", "value"]})
 		
@@ -185,18 +189,18 @@ class HttpSession:
 				if Resp.invalid_reason == "sess" and attempt_sess < self.__class__.MAX_ATTEMPT_SESS:
 					self.setSession(lib)
 
-					return self.post(url, mode=mode, data=data, lib=lib, attempt_lib=attempt_lib, attempt_sess=attempt_sess+1)
+					return self._http_req(url, mode=mode, data=data, lib=lib, headers=headers, attempt_lib=attempt_lib, attempt_sess=attempt_sess+1)
 
 				# could change lib
 				if Resp.invalid_reason == "lib" and attempt_lib < self.__class__.MAX_ATTEMPT_LIB:
 
-					return self.post(url, mode=mode, data=data, lib=untried, attempt_lib=attempt_lib+1, attempt_sess=attempt_sess)
+					return self._http_req(url, mode=mode, data=data, lib=untried, headers=headers, attempt_lib=attempt_lib+1, attempt_sess=attempt_sess)
 
 				return Resp
 
 			else:
 				# pre needs to have {} so hash can format the string and put there the hash
-				pre = hash(">{}< post returned invalid Response with None 'invalid_reason'")
+				pre = hash(">{}< _http_req returned invalid Response with None 'invalid_reason'")
 				self.__class__._log.error(f"{pre}, data={data}")
 
 				raise Exception(f"{pre}")
@@ -280,13 +284,27 @@ class HttpSession:
 		return headers
 
 
-	def __del__(self) -> None:
-		# TODO detect if need close() and only call then
+	def close(self) -> bool:
 
-		if hasattr(self, "SessR"):
+		if self.SessR._open_status:
+			self.SessR._open_status = False
+			self.SessR.close()
+			self.__class__._log.info(f"requests Session with _SID '{self.SessR._SID}' closed")
+
+		if self.SessH._open_status:
+			self.SessH._open_status = False
+			self.SessH.close()
+			self.__class__._log.info(f"httpx Session with _SID '{self.SessH._SID}' closed")
+
+		return True
+
+
+	def __del__(self) -> None:
+		
+		if hasattr(self, "SessR") and self.SessR._open_status:
 			self.SessR.close()
 			self.__class__._log.warning(f"requests Session with _SID '{self.SessR._SID}' closed")
 
-		if hasattr(self, "SessH"):
+		if hasattr(self, "SessH") and self.SessH._open_status:
 			self.SessH.close()
 			self.__class__._log.warning(f"httpx Session with _SID '{self.SessH._SID}' closed")

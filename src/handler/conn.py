@@ -28,7 +28,7 @@ class ConnectionHandler:
 		return Conn
 
 
-	def remove_conn(self, Conn:Connection, pragma:str='') -> bool:
+	def remove_conn(self, Conn:Connection, pragma:str='', force:bool=False) -> bool:
 		# type check Conn
 		if not isinstance(Conn, Connection):
 			self.__class__._log.error(f"remove_conn called with wrong Conn type: {type(Conn)}")
@@ -55,7 +55,7 @@ class ConnectionHandler:
 
 		# attempt to close it
 		# if successful remove key from self.conns
-		if not Conn.open_status or Conn.close_DB(pragma=pragma):
+		if not Conn.open_status or Conn.close_DB(pragma=pragma, force=force):
 			if key in self.conns:
 				self.conns.pop(key)
 
@@ -63,6 +63,21 @@ class ConnectionHandler:
 
 		else:
 			return False
+
+
+	def remove_thr_conns(self, pragma:str='') -> bool:
+		# lookup all Conns
+		remove_conns = list()
+		results = list()
+
+		for Conn in self.conns:
+			if self.conns[Conn].thread_id == get_ident():
+				remove_conns.append(Conn)
+
+		for Conn in remove_conns:
+			results.append(self.remove_conn(self.conns[Conn], pragma, force=True))
+
+		return all(results)
 
 
 	def get_conn(self, read_only:bool=True, 
