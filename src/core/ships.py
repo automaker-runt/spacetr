@@ -1,5 +1,6 @@
 # ships
-import time, json
+import time, json, copy
+import threading
 import pandas as pd
 from collections import Counter
 from functools import partial
@@ -81,26 +82,59 @@ class Ship:
 		self.jj = jj
 		self.sdf = sdf # is list containig pd.core.frame.DataFrame at idx 0
 		self.Objman = Objman
-		self.fleet = fleet
+		self.jj2 = {
+					"fleet": fleet,
+					"ship_id": None,
+					"has_task": False,
+					"task_id": None
+		}
 
 		self.get_wp_id = partial(Waypoint.get_wp_id, Objman)
 		self.get_wp_sym = partial(Waypoint.get_wp_sym, Objman)
 		self.insert_wp = partial(Waypoint.insert_wp, Objman)
 		self.get_ship_id = partial(self.__class__.get_ship_id, Objman)
 		
-		self._ship_id = None
-		self.has_task = False
-		self.task_id = None
+		
 
 		# if read ship symbol through DB, need to load the rest
 		if self.jj["frame"] is None:
 			self.jj = self.select_ship()
-			
+		
+		self.prev_jj = copy.deepcopy(self.jj)
+		self.prev_jj2 = copy.deepcopy(self.jj2)
 		# update sdf
 		self.updt_sdf()
 
 		self.__class__._log.info(f"new ship '{self.name}.{self.frame.lower()}' added to fleet '{fleet}'")
 
+
+	def __str__(self) -> str:
+		return f"{self.name}.{self.frame.lower()}"
+
+
+	@property
+	def task_id(self) -> str:
+		return self.jj2["task_id"]
+
+	@task_id.setter
+	def task_id(self, value):
+		self.jj2["task_id"] = value
+
+	@property
+	def has_task(self) -> str:
+		return self.jj2["has_task"]
+
+	@has_task.setter
+	def has_task(self, value):
+		self.jj2["has_task"] = value
+
+	@property
+	def fleet(self) -> str:
+		return self.jj2["fleet"]
+
+	@fleet.setter
+	def fleet(self, value):
+		self.jj2["fleet"] = value
 
 	@property
 	def name(self) -> str:
@@ -108,9 +142,13 @@ class Ship:
 
 	@property
 	def ship_id(self) -> str:
-		if self._ship_id is None:
-			self._ship_id =  self.__class__.get_ship_id(self.Objman, self.name)
-		return self._ship_id
+		if self.jj2["ship_id"] is None:
+			self.jj2["ship_id"] =  self.__class__.get_ship_id(self.Objman, self.name)
+		return self.jj2["ship_id"]
+
+	@property
+	def goods_in_cargoInv(self) -> str:
+		return list(i["symbol"] for i in self.cargoInv)
 
 	@property
 	def frame(self) -> int:
@@ -124,7 +162,7 @@ class Ship:
 		return self.jj["registration"]["role"]
 
 	@property
-	def status(self) -> int:
+	def status(self) -> str:
 		return self.jj["nav"]["status"]
 
 	@property
@@ -183,16 +221,33 @@ class Ship:
 		return self.jj["cargo"]["units"]
 
 
-	def _update_state(self, inp:dict):
-		DB_state = self.jj.copy()
-		new_jj = next(i for i in inp["data"] if i["symbol"] == self.name)
-		self.jj.update(new_jj)
+	def _update_state(self, inp: Union[dict, None]=None):
+		df_updated = False
+		if inp is None:
+			if not self.jj == self.prev_jj:
+				self.update_ship(self.prev_jj)
+				self.prev_jj = copy.deepcopy(self.jj)
+				self.prev_jj2 = copy.deepcopy(self.jj2)
+		
+				self.updt_sdf()
+				df_updated = True
 
-		self.updt_sdf()
+		else:
+			DB_state = copy.deepcopy(self.jj)
+			self.prev_jj2 = copy.deepcopy(self.jj2)
+			self.jj.update(inp)
 
-		# if DB state not memory state
-		if not DB_state == self.jj:
-			self.update_ship(DB_state)
+			self.updt_sdf()
+			df_updated = True
+
+			# if DB state not memory state
+			if not DB_state == self.jj:
+				self.update_ship(DB_state)
+				self.prev_jj = copy.deepcopy(self.jj)
+
+		if not df_updated and self.jj2 != self.prev_jj2:
+			self.prev_jj2 = copy.deepcopy(self.jj2)
+			self.updt_sdf()
 
 
 	def fuel_cost(self, coord:coord.GameCoord, mode:str="CRUISE", coord_b: Union[coord.GameCoord, None]=None) -> int:
@@ -247,46 +302,57 @@ class Ship:
 				return False
 
 
-	def go_waypoint(self, coord:coord.GameCoord, mode:str="CRUISE") -> bool:
+	def go_waypoint(self, coord:coord.GameCoord, mode:str="CRUISE", reserve:float=0.05, dwnti_func=None) -> bool:
 		
-		if not self.in_range(coord, mode=mode):
-			_log.error(f"go_waypoint {self.name}.{self.frame.lower()} to {coord} failed because ship is out of range")
+		if not self.in_range(coord, mode=mode, reserve=reserve):
+			self.__class__._log.error(f"go_waypoint {self.name}.{self.frame.lower()} to {coord} failed because ship is out of range")
 
 			return False
 
 		# we have enough fuel to go to coord
 
 		# check if we are in orbit, if not, go there
-		if self.status != "IN_ORBIT" and not self.go_orbit():
-			_log.error(f"go_waypoint {self.name}.{self.frame.lower()} to {coord} failed because ship failed going to orbit first")
+		if self.status != "IN_ORBIT":
+			if not self.go_orbit():
+				self.__class__._log.error(f"go_waypoint {str(self)} to {str(coord)} failed because ship failed going to orbit first")
 
-			return False
+				return False
+
+			elif dwnti_func:
+				dwnti_func(self.jj)
 
 		# we are in orbit and can go now
 		url, data = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_WAYPOINT"]
 
 		url = url.format(ShipSymbol=self.name)
-		data.update({"WaypointSymbol": coord.wp})
+		data.update({"waypointSymbol": coord.wp})
 
 		suc, re = self.Objman.post(url=url, data=data)
 
-		if suc:
-			_log.info(f"{self.name}.{self.frame.lower()} on the way to {coord}")
-			
-			# need to update Ship state in self.jj
-			self._update_state(json.loads(re.Response.content.decode()))
+		if not suc:
+			self.__class__._log.error(f"go_waypoint {str(self)} to {str(coord)} failed ({re.Response._reqID})")
 
-			# need to patch flightMode
-			if self.flightMode != mode:
-				# TODO send patch request
-				pass
-			
-			return True
+			return False		
+
+		# need to update Ship state in self.jj
+		self._update_state(re.Response.json()["data"])
+
+		if dwnti_func:
+			self.__class__._log.info(f"[{threading.current_thread().name}] {str(self)} on the way to {str(coord)}")
+			dwnti_func(self.jj)
+			self.jj["nav"]["status"] = "IN_ORBIT"
+			self._update_state()
 
 		else:
-			_log.error(f"go_waypoint {self.name}.{self.frame.lower()} to {coord} failed ({re.Response._reqID})")
+			self.__class__._log.info(f"{str(self)} on the way to {str(coord)}")
 
-			return False
+		# need to patch flightMode
+		if self.flightMode != mode:
+			# TODO send patch request
+			self.__class__._log.error(f"go_waypoint detected needed change in flight mode for {str(self)} on the way to {str(coord)} but it isn't implemented")
+		
+		return True
+			
 
 
 	def go_orbit(self) -> bool:
@@ -296,18 +362,19 @@ class Ship:
 
 		suc, re = self.Objman.post(url=url, data=dict())
 
-		if suc:
-			_log.info(f"{self.name}.{self.frame.lower()} went to orbit {coord}")
-			
-			# need to update Ship state in self.jj
-			self._update_state(json.loads(re.Response.content.decode()))
-			
-			return True
-
-		else:
-			_log.error(f"go_orbit {self.name}.{self.frame.lower()} failed to orbit at {coord} ({re.Response._reqID})")
+		if not suc:
+			self.__class__._log.error(f"go_orbit {self.name}.{self.frame.lower()} failed to orbit at {str(self.coordinates)} ({re.Response._reqID})")
 
 			return False
+
+		re_dec = re.Response.json()
+
+		self.__class__._log.info(f"{self.name}.{self.frame.lower()} went to orbit {str(self.coordinates)}")
+		
+		# need to update Ship state in self.jj
+		self._update_state(re_dec["data"])
+		
+		return True
 
 
 	def go_dock(self) -> bool:
@@ -317,26 +384,29 @@ class Ship:
 
 		suc, re = self.Objman.post(url=url, data=dict())
 
-		if suc:
-			_log.info(f"{self.name}.{self.frame.lower()} went to dock {coord}")
-			
-			# need to update Ship state in self.jj
-			self._update_state(json.loads(re.Response.content.decode()))
-			
-			return True
-
-		else:
-			_log.error(f"go_dock {self.name}.{self.frame.lower()} failed to dock at {coord} ({re.Response._reqID})")
+		if not suc:
+			self.__class__._log.error(f"go_dock {self.name}.{self.frame.lower()} failed to dock at {str(self.coordinates)} ({re.Response._reqID})")
 
 			return False
 
+		self.__class__._log.info(f"{self.name}.{self.frame.lower()} went to dock {str(self.coordinates)}")
+		
+		# need to update Ship state in self.jj
+		self._update_state(re.Response.json()["data"])
+		
+		return True			
 
-	def extract_ores(self) -> bool:
+
+	def extract_ores(self, dwnti_func=None) -> bool:
 		# check if we are in orbit, if not, go there
-		if self.status != "IN_ORBIT" and not self.go_orbit():
-			_log.error(f"extract_ores {self.name}.{self.frame.lower()} from {coord} failed because ship failed going to orbit first")
+		if self.status != "IN_ORBIT":
+			if not self.go_orbit():	
+				self.__class__._log.error(f"extract_ores {self.name}.{self.frame.lower()} from {str(self.coordinates)} failed because ship failed going to orbit first")
 
-			return False
+				return False
+
+			elif dwnti_func:
+				dwnti_func(self.jj)
 
 		# we are in orbit, we can extract now
 		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["EXTRACT_ORES"]
@@ -345,21 +415,24 @@ class Ship:
 
 		suc, re = self.Objman.post(url=url, data=dict())
 
-		if suc:
-			_log.info(f"{self.name}.{self.frame.lower()} started extracting ores at {coord}")
-			
-			# need to update Ship state in self.jj
-			self._update_state(json.loads(re.Response.content.decode()))
-			
-			return True
-
-		else:
-			_log.error(f"extract_ores {self.name}.{self.frame.lower()} failed to start extracting ores at {coord} ({re.Response._reqID})")
+		if not suc:
+			self.__class__._log.error(f"extract_ores {self.name}.{self.frame.lower()} failed to start extracting ores at {str(self.coordinates)} ({re.Response._reqID})")
 
 			return False
+		
+		# need to update Ship state in self.jj
+		self._update_state(re.Response.json()["data"])
+
+		if dwnti_func:
+			self.__class__._log.info(f"[{threading.current_thread().name}] {str(self)} extracted ores at {str(self.coordinates)}")
+			dwnti_func(self.jj)
+		else:
+			self.__class__._log.info(f"{str(self)} extracted ores at {str(self.coordinates)}")
+		
+		return True	
 
 
-	def refuel(self) -> bool:
+	def refuel(self, dwnti_func=None) -> bool:
 		# one unit at MARKETPLACE replenishes 100 units in ship tank
 		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REFUEL"]
 
@@ -367,18 +440,21 @@ class Ship:
 
 		suc, re = self.Objman.post(url=url, data=dict())
 
-		if suc:
-			_log.info(f"{self.name}.{self.frame.lower()} refueled at {coord}")
-			
-			# need to update Ship state in self.jj
-			self._update_state(json.loads(re.Response.content.decode()))
-			
-			return True
-
-		else:
-			_log.error(f"refuel {self.name}.{self.frame.lower()} at {coord} ({re.Response._reqID})")
+		if not suc:
+			self.__class__._log.error(f"refuel {str(self)} at {str(self.coordinates)} ({re.Response._reqID})")
 
 			return False
+		
+		# need to update Ship state in self.jj
+		self._update_state(re.Response.json()["data"])
+
+		if dwnti_func:
+			self.__class__._log.info(f"[{threading.current_thread().name}] {str(self)} refueled at {str(self.coordinates)}")
+			dwnti_func(self.jj)
+		else:
+			self.__class__._log.info(f"{str(self)} refueled at {str(self.coordinates)}")
+		
+		return True
 
 
 	def sell_good(self, good:str, quantity:int) -> bool:
@@ -390,12 +466,12 @@ class Ship:
 		suc, re = self.Objman.post(url=url, data=data)
 
 		if suc:
-			_log.info(f"{self.name}.{self.frame.lower()} sold {quantity} {good} at {self.waypoint} market")
+			self.__class__._log.info(f"{self.name}.{self.frame.lower()} sold {quantity} {good} at {self.waypoint} market")
 
 			return True
 
 		else:
-			_log.error(f"{self.name}.{self.frame.lower()} failed selling {quantity} {good} at {self.coordinates} market ({re.Response._reqID})")
+			self.__class__._log.error(f"{self.name}.{self.frame.lower()} failed selling {quantity} {good} at {self.coordinates} market ({re.Response._reqID})")
 
 			return False
 
@@ -1217,9 +1293,9 @@ class Ship:
 						"arrival": ISO_to_epoch(self.jj["nav"]["route"]["arrival"]),
 						"departure": ISO_to_epoch(self.jj["nav"]["route"]["departureTime"])
 						})
-				if not self.jj["nav"]["status"] == DB_state["nav"]["status"]:
-					direct_updt.update({"status": self.jj["nav"]["status"]})
-				if not self.jj["nav"]["flightMode"] == DB_state["nav"]["flightMode"]:
+			if not self.jj["nav"]["status"] == DB_state["nav"]["status"]:
+				direct_updt.update({"status": self.jj["nav"]["status"]})
+			if not self.jj["nav"]["flightMode"] == DB_state["nav"]["flightMode"]:
 					direct_updt.update({"flightMode": self.jj["nav"]["flightMode"]})
 
 		if "crew" in diff:
@@ -1407,7 +1483,7 @@ class Ship:
 
 
 	def updt_sdf(self) -> bool:
-		_di = self.jj.copy()
+		_di = copy.deepcopy(self.jj)
 		
 		# update dict for sdf
 		_di.update({
@@ -1415,9 +1491,11 @@ class Ship:
 						"mounts": [i["symbol"] for i in _di["mounts"]],
 						"has_task": self.has_task,
 						"task_id": self.task_id,
-						"ship_id": self.ship_id
-
+						"ship_id": self.ship_id,
+						"fleet": self.fleet,
+						"GmCrd": self.coordinates
 					})
+
 		# also update all str timestamps to epoch
 		_di["nav"]["route"]["arrival"] = ISO_to_epoch(_di["nav"]["route"]["arrival"])
 		_di["nav"]["route"]["departureTime"] = ISO_to_epoch(_di["nav"]["route"]["departureTime"])

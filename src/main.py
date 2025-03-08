@@ -71,7 +71,7 @@ def init_logger(q:queue.Queue):
 	# init logger with FileHandler, loglevel set global
 	logger.init_logger(log, formatter=formatter, loglvl=loglevel)#, filters=[Fil])
 
-	log.info(f"started {__version__}")
+	log.info("started {} with main thread id %(threadID)s".format(__version__), {"threadID": threading.get_ident(), "_msg_args": ["arg", "value"]})
 	#log.netmsg("test network message")
 
 	log.debug("test start debug msg")
@@ -82,7 +82,6 @@ def init_settings():
 	global Config
 
 	Config = settings.Config()
-	Config.config = settings.Config.load_default_config()
 
 	HttpSession.setConfig(Config)
 
@@ -113,7 +112,7 @@ def thr_sql_log(Sql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, name:str=
 	# get Conn here to actually open the DB from this thread
 	# and manifest Conn "main1"
 	Sql_h.get_conn(read_only=False, persist=True)
-	log.info(f"[{name}] instantiated")
+	log.info("[{}] instantiated with id %(threadID)s".format(name), {"threadID": threading.get_ident(), "_msg_args": ["arg", "value"]})
 		
 	try:
 		# dequeueing from logger QueueHandler and saving into DB
@@ -157,7 +156,7 @@ def thr_sql_netmsg(netSql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, nam
 	# get Conn here to actually open the DB from this thread
 	# and manifest Conn "main1"
 	netSql_h.get_conn(read_only=False, persist=True)
-	log.info(f"[{name}] instantiated")
+	log.info("[{}] instantiated with id %(threadID)s".format(name), {"threadID": threading.get_ident(), "_msg_args": ["arg", "value"]})
 	
 	try:
 		# dequeueing from SimpleQueue sQ_netmsg and saving into DB
@@ -217,7 +216,10 @@ def main():
 	SptrSchemer = Schemers(importerfp=Config.config["DB_SCHEME_SPACETR_FP"])
 	
 	SptrSH = SqlHand(SptrSchemer, Config.config["DB_SPACETR_FP_PROD" if PROD else "DB_SPACETR_FP"])
+	# get main1 with open_conn=True to run whole schema, so selects can be made
 	SptrSH.get_conn(read_only=False, persist=True)
+	# cleanup Conn from thread
+	SptrSH.ConnHandler.conns["main1"].close_DB()
 
 	# thread for logging into DB
 	ev_t_sql_log_end = threading.Event()
@@ -260,7 +262,6 @@ def main():
 	
 	shutdown(events, wake_up_qs)
 	NetwSession.close()
-	SptrSH.close()
 
 	for thr in threads:
 		if thr.name in ("t_sql_log"):
@@ -275,6 +276,7 @@ def main():
 			log.warning(f"thread '{thr.name}' failed auto-close on shutdown call")
 
 	shutdown([ev_t_sql_log_end], [sQ], flag=False)
+	SptrSH.close()
 	SH.close()
 	t_sql_log.join()
 

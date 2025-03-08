@@ -1,5 +1,6 @@
 # waypoints
 import time
+import pandas as pd
 from typing import Union
 
 from core.utils import coord, meta, netw
@@ -363,3 +364,42 @@ class Waypoint:
 
 
 			return re_coords
+
+
+	@classmethod
+	def get_sys_wp_df(cls, Objman:ObjManager, sys_wp:str) -> pd.core.frame.DataFrame:
+		re_DB = Objman.sel(f"SELECT * FROM waypoints_trts_orbtl_mdf_view WHERE wp_symbol LIKE '{sys_wp}%'", _format=False)
+
+		if len(re_DB) == 0:
+			# trigger Waypoint insert
+			Waypoint.api_get_all_sys_wp(Objman, sys_wp)
+			re_DB = Objman.sel(f"SELECT * FROM waypoints_trts_orbtl_mdf_view WHERE wp_symbol LIKE '{sys_wp}%'", _format=False)
+
+			if len(re_DB) == 0:
+				cls._log.critical(f"get_sdf_sys_wp failed getting system waypoints from DB after calling api_get_all_sys_wp for system '{sys_wp}'")
+				return pd.DataFrame()
+
+		cols = ["id", "wp_symbol", "wp_type", "coords", "traits", "orbitals", "modifiers", "isUnderConstruction", "chart_by", "chart_time", "updated"]
+
+		df = pd.DataFrame(re_DB, columns=cols).set_index("id")
+		
+		# from https://stackoverflow.com/a/52854800
+		def GM(coords, wp):
+			return GameCoord(*coords.split('::'), wp)
+
+		df["GmCrd"] = df.apply(lambda x: GM(x.coords, x.wp_symbol), axis=1)		
+
+		return df
+
+
+	@classmethod
+	def validate_wp_sym(cls, Objman:ObjManager, inp: Union[str, list]) -> bool:
+		if isinstance(inp, str):
+			inp = [inp]
+
+		if None in inp:
+			return False
+		elif len(inp) == 0:
+			return False
+
+		return True

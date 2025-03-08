@@ -9,7 +9,12 @@ class GameCoord:
 		# transform str coordinates to prorietary coordinate
 		self.coord = (int(x), int(y))
 		self.wp = wp
+		self.sys = wp[:wp.rfind('-')]
 
+
+	@property
+	def coords(self):
+		return f"{self.coord[0]}::{self.coord[1]}"
 
 	def __str__(self) -> str:
 

@@ -160,6 +160,79 @@ class OptionsSubMenu(OwnAbstractMenu):
 		self.add_menu_item(MenuItem(1, "HTTP", menu=OptionsHTTPSubMenu()))
 
 
+class ConfigSubMenu(OwnAbstractMenu):
+	show_hidden_menu = False
+
+	def __init__(self, Conf):
+		self.Conf = Conf
+
+		super().__init__("> spacetr > Config\n")
+
+	def initialise(self):
+		
+		self.add_menu_item(MenuItem(0, "back").set_as_exit_option())
+		self.add_menu_item(MenuItem(1, "Set good to trait mapping", lambda: self.set_good_trait()))
+		self.add_menu_item(MenuItem(2, "Delete good to trait mapping", lambda: self.del_good_trait()))
+		self.add_menu_item(MenuItem(3, "Set FLIGHT_MODE_FRIGATES", lambda: self.set_config("FLIGHT_MODE_FRIGATES")))
+		self.add_menu_item(MenuItem(4, "Set MARKETDATA_CYCLE", lambda: self.set_config("MARKETDATA_CYCLE", value_type="int")))
+
+
+	def set_good_trait(self):
+		print(json.dumps(self.Conf.config["GOOD_TRAIT_MAP"], indent=4))
+		print()
+		new_good = input("Input new good: ").strip()
+		if new_good.isdigit() and new_good == "0":
+			return
+		new_traits = input("Input the traits (leave space for multiple): ").strip()
+		if new_traits.isdigit() and new_traits == "0":
+			return
+		if new_traits.find(" ") != -1:
+			new_traits = new_traits.split()
+		else:
+			new_traits = [new_traits]
+
+		self.Conf.config["GOOD_TRAIT_MAP"].update({new_good: new_traits})
+		print(f"> Set '{new_good}: {self.Conf.config["GOOD_TRAIT_MAP"][new_good]}'")
+
+
+	def del_good_trait(self):
+		print(json.dumps(self.Conf.config["GOOD_TRAIT_MAP"], indent=4))
+		print()
+		good = input("Delete good: ").strip()
+		if good.isdigit() and good == "0":
+			return
+		confirm = input("Are you sure? [y] / [n]: ").strip()
+
+		if confirm.lower().strip() == "y":
+			try:
+				deleted = self.Conf.config["GOOD_TRAIT_MAP"].pop(good)
+			except Exception as E:
+				print(E)
+			else:
+				print(f"> Deleted '{good}: {deleted}'")
+
+
+	def set_config(self, key:str, value_type:str="str"):
+		print()
+		if key not in self.Conf.config:
+			print("No such key in Config")
+			return
+		print(json.dumps({key: self.Conf.config[key]}, indent=4))
+		print()
+		new_set = input(f"Input new {value_type} value: ").strip()
+		if new_set.isdigit() and value_type != "int" and new_set == "0":
+			return
+
+		if value_type == "str":
+			self.Conf.config[key] = new_set
+		elif value_type == "int":
+			self.Conf.config[key] = int(new_set)
+		elif value_type == "list":
+			self.Conf.config[key] = [new_set]
+
+		print(f"> Set '{key}: {self.Conf.config[key]}'")
+
+
 class Menu(OwnAbstractMenu):
 	show_hidden_menu = False
 	#options = {}
@@ -212,7 +285,6 @@ class Menu(OwnAbstractMenu):
 						wake_up_qs,
 						threads):
 		
-		super().__init__("> spacetr\n")
 		self.session = session
 		self.Conf = Conf
 		self.SqlHan = SqlHan
@@ -227,6 +299,9 @@ class Menu(OwnAbstractMenu):
 
 		self.ShipHan = None
 
+		super().__init__("> spacetr\n")
+
+
 	def initialise(self):
 		
 		self.add_menu_item(MenuItem(0, "exit").set_as_exit_option())
@@ -234,9 +309,8 @@ class Menu(OwnAbstractMenu):
 		self.add_menu_item(MenuItem(2, "POST", lambda: self._sess_post()))
 		self.add_menu_item(MenuItem(3, "Deploy Core logic", lambda: self._init_Core()))
 		self.add_menu_item(MenuItem(4, "End Core logic", lambda: self._stop_Core()))
-		#self.add_menu_item(MenuItem(4, "Register new Agent", lambda: self._sess_post(url=self.Conf.config["sites"]["SPACETRADERS"]["POST"]["REGISTER"],
-		#																				headers=self.BEARER_ACC)))
-		self.add_menu_item(MenuItem(5, "Options", menu=OptionsSubMenu()))
+		self.add_menu_item(MenuItem(5, "Config", menu=ConfigSubMenu(self.Conf)))
+		self.add_menu_item(MenuItem(6, "Options", menu=OptionsSubMenu()))
 		# self.add_menu_item(MenuItem(2, "Show hidden menu item", lambda: self.__should_show_hidden_menu__()))
 		# self.add_hidden_menu_item(MenuItem(3, "Hidden menu item", lambda: print("I was a hidden menu item")))
 

@@ -15,11 +15,11 @@ class Agent:
 	@classmethod
 	def insert(cls, SqlHan, inp:dict) -> bool:
 		standard_inp = {
-							"created": None,
-							"name": None,
-							"credits": None,
-							"faction": None,
-							"bearer": None,
+							"created": str(None),
+							"name": str(None),
+							"credits": str(None),
+							"faction": str(None),
+							"bearer": str(None),
 							"updated": int(time.time()),
 		}
 		
@@ -31,13 +31,27 @@ class Agent:
 		standard_inp.update(inp)
 
 		if not SqlHan.ins("agents", list(standard_inp.values())):
-			cls._log.error(f"insert failed because of no valid inp, len '{len(inp)}'")
+			cls._log.error(f"insert failed because of no valid inp, len '{len(standard_inp)} and {standard_inp}'")
 
 			return False
 
 		cls._log.info("New competitive Agent '{}' inserted".format(standard_inp["name"]))
 
 		return True
+
+
+	@classmethod
+	def get_agent_id(cls, Objman, inp:str) -> Union[int, None]:
+		re = Objman.sel(f"SELECT id FROM agents WHERE name=?;", (inp,), _format=False)
+
+		if len(re) == 0:
+			if cls.insert(Objman.Sqhlhan, inp={"name": inp}):
+				re = Objman.sel(f"SELECT id FROM agents WHERE name=?;", (inp,), _format=False)
+			else:
+				cls._log.error(f"get_agent_id failed getting id for agent {inp} due to failed insert")
+				return
+			
+		return re[0][0]
 
 
 	def __init__(self, Objman:ObjManager, data: Union[dict, None]=None, bearer=None):
@@ -50,6 +64,10 @@ class Agent:
 	@property
 	def creds(self) -> int:
 		return self.data["credits"]
+
+	@property
+	def shipCount(self) -> int:
+		return self.data["shipCount"]
 
 
 	def api_get_agent(self) -> Union[dict, None]:
@@ -67,7 +85,7 @@ class Agent:
 			return re_dec["data"]
 
 
-	def insert(self) -> bool:
+	def insert_(self) -> bool:
 		standard_inp = {
 							"created": self.created,
 							"name": self.data["symbol"],

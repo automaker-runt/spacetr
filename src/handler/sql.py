@@ -4,6 +4,7 @@ import time
 from threading import get_ident
 from typing import Union
 
+from fsys import rename
 from handler.conn import ConnectionHandler
 from hkeep.error import tb
 from hkeep.log.logger import get_logger
@@ -14,7 +15,6 @@ from utils.sql.scheme import Schemers
 from utils.sql import strings
 from utils.strings.format import Formatter, DeFormatter
 from utils.strings.shorten import short, shortb
-from utils.strings.xxhash import hash
 
 
 class SqlHand:
@@ -76,7 +76,7 @@ class SqlHand:
 			self.ConnHandler = ConnectionHandler(self.dbfp)
 
 		self.journal_mode = None
-		self.ConnHandler._add_conn(open_conn=False, persist=True)
+		self.ConnHandler._add_conn(open_conn=False, read_only=False, persist=True)
 
 
 	def ins(self, table:str, inp: Union[list, str], extras: Union[dict, None]=None, **entryargs) -> bool:
@@ -105,7 +105,7 @@ class SqlHand:
 
 					# return False
 				
-			elif len(inp) > 1 and isinstance(inp[0], Union[str, int]):
+			elif len(inp) > 1 and (isinstance(inp[0], Union[str, int]) or isinstance(inp[-1], Union[str, int])):
 				# a list with many strings giving values for one line
 				if table in self.deformatter:
 					inp = self.deformatter[table].apply(inp)
@@ -556,7 +556,7 @@ class SqlHand:
 			# until here vals and cols have been redacted and values and columns should have been replaced with the
 			# ids of the foreign keys and with the true column names
 
-			where, where_dict = create.dict_sql_updt(list(unique.keys()), list(unique.values()))
+			where, where_dict = create.dict_sql_sel(list(unique.keys()), list(unique.values()))
 			set_, set_dict = create.dict_sql_updt(cols, vals)
 
 			com_vals = list()
@@ -582,10 +582,6 @@ class SqlHand:
 			self.__class__._log.critical(f"updt unexpected Error, {tb(E)}")
 
 			return False
-
-		finally:
-			if Conn.key_id != "main1":	
-				self.ConnHandler.remove_conn(Conn)
 
 
 	def sel(self, com:str, com_var: Union[tuple, None]=None, _format:bool=True, Conn: Union[Connection, None]=None) -> list:
@@ -715,7 +711,7 @@ class SqlHand:
 		
 			re = cur.fetchall()
 
-			if self.__class__._log.isEnabledFor(10):	
+			if self.__class__._log.isEnabledFor(10):
 				com_var_tup_str = f", {com_var_tup}" if len(com_var_tup) > 0 else ""
 				re_snippet = f" resulting in {len(re)} lines, 1st one: {shortb(re[0])}" if len(re) > 0 else ""
 				self.__class__._log.debug(f"executed sql command '{com}'{com_var_tup_str}{re_snippet}")
@@ -908,18 +904,15 @@ class SqlHand:
 				self.__class__._log.warning(f"init_DB didn't execute possible views because of error in initialization of table(s)")
 
 
-
-
 	def get_conn(self, read_only:bool=True, persist: Union[bool, None]=None) -> Union[Connection, None]:
 		
 		if persist is None:
 			persist = not read_only
 
 		# check if there is a suitable conn already opened by this thread
-		own_t_id = get_ident()
 		suitable_conn_id = list()
 		# check for persist True, thread_id to match this thread and then append
-		if any(True for i in self.ConnHandler.conns.values() if i.persist and i.thread_id == own_t_id and suitable_conn_id.append(i.key_id) is None):
+		if any(True for i in self.ConnHandler.conns.values() if i.persist and i.thread_id == get_ident() and suitable_conn_id.append(i.key_id) is None):
 			self.__class__._log.debug(f"get_conn found suitable Conn '{suitable_conn_id[0]}'")
 			
 			return self.ConnHandler.conns[suitable_conn_id.pop(0)]
@@ -939,9 +932,17 @@ class SqlHand:
 
 
 	def new_dbfp(self, dbfp:str):
+		# renames current file to last increment+1
+		# creates new blank DB with same filename before renaming
+
 		self.close()
-		# __init__ again, don't give ConnHandler, let it make own for new dbfp
-		self.__init__(self.Scheme, dbfp, self.deformatter, self.formatter)
+		# rename old files with dbfp
+		if not rename.file(self.dbfp, dbfp):
+			self.__class__._log.error(f"new_dbfp failed renaming {short(self.dbfp)}")
+
+		# create new DB file without number
+		self.__init__(self.Scheme, self.dbfp)
+		self.__class__._log.info(f"created new DB {short(self.dbfp)} and renamed old DB to {short(dbfp)}")
 
 
 	def __del__(self):

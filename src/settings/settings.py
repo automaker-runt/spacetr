@@ -146,7 +146,17 @@ class Config:
 						"DEFAULT_SESSION_MAX_ATTEMPT_SESS": 2,
 						"ExitThreadSignal": "//exit",
 						"FACTIONS": ["QUANTUM", "DOMINION", "ASTRO", "CORSAIRS", "VOID", "OBSIDIAN", "AEGIS", "UNITED", "SOLITARY", "COBALT", "OMEGA", "ECHO", "COSMIC"],
+						"FLIGHT_MODE_FRIGATES": "CRUISE",
+						"GOOD_TRAIT_MAP": {
+								"COPPER_ORE": [
+										"COMMON_METAL_DEPOSITS"
+								],
+								"ALUMINUM_ORE": [
+										"COMMON_METAL_DEPOSITS"
+								]
+						},
 						"HTTP_REPEAT_INVALIDATION": ("error", "method not allowed", "conflict"),
+						"MARKETDATA_CYCLE": 30,
 						"NAVIGATION_MULTIPLIER": {
 													"CRUISE": 25,
 													"DRIFT": 250,
@@ -201,7 +211,10 @@ class Config:
 						"THREAD_CTRCT_LOGI_API_INTERVAL": 1845,
 						"THREAD_CORE_JOIN_TIMEOUT": 21.14,
 						"THREAD_MAIN_DEFAULT_JOIN_TIMEOUT": 3.31,
-						
+						"THREAD_MRKTDF_LOGI_CHECK_WPS_INTERVAL": 600,
+						"THREAD_MRKTDF_LOGI_INTERVAL": 2,
+						"THREAD_TASK_INTERVAL": 1,
+						"THREAD_TASK_JOIN_TIMEOUT": 7.14
 		}
 
 		return settings

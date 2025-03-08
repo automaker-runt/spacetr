@@ -36,7 +36,7 @@ def dict_sql_ins(
 		else:	
 			raise ValueError("more values than keys")
 
-	# normalize values
+	# bring value data types to nominal
 	di = normalize_vals(keys, values)
 
 	# create the where part of insert
@@ -57,16 +57,38 @@ def dict_sql_updt(
 	if len(keys) != len(values):
 		raise ValueError("key len is not equal value len")
 
-	# normalize values
+	# bring value data types to nominal
+	di = normalize_vals(keys, values)
+
+	# create the set part
+	# of update
+	set_ = str()
+	for k in di.keys():
+	    set_ += f'{k}=?, '
+
+	if len(set_) != 0:
+		set_ = set_[:-2]
+
+	return set_, di
+
+
+def dict_sql_sel(
+			keys: Union[list, tuple],
+			values: Union[list, tuple]) -> Union[str, dict]:
+
+	if len(keys) != len(values):
+		raise ValueError("key len is not equal value len")
+
+	# bring value data types to nominal
 	di = normalize_vals(keys, values)
 
 	# create the where part or the set part
 	# of update
 	where = str()
 	for k in di.keys():
-	    where += f'{k}=?, '
+	    where += f"{k}=? AND "
 
 	if len(where) != 0:
-		where = where[:-2]
+		where = where[:-5]
 
 	return where, di

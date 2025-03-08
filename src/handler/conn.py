@@ -1,10 +1,13 @@
+import time
 import sqlite3
 from collections.abc import Callable
 from threading import get_ident
 from typing import Union
 
 from hkeep.log.logger import get_logger
+from utils.snapq import SnapshotQueue
 from utils.sql.conn import Connection
+from utils.strings.xxhash import getHash
 
 
 class ConnectionHandler:
@@ -15,15 +18,36 @@ class ConnectionHandler:
 	def __init__(self, dbfp:str):
 		self.conns = dict()
 		self.dbfp = dbfp
+		self.block_add = False
+		self.block_add_q = SnapshotQueue()
 
 
 	def _add_conn(self, read_only:bool=False, open_conn:bool=True, persist:bool=True) -> Union[Connection, None]:
 		
+		# implement block
+		own_ident = None
+		if self.block_add or not self.block_add_q.empty():
+			own_ident = getHash(str(get_ident()))
+			self.block_add_q.put(own_ident)
+			
+			while self.block_add_q.snapshot()[0] != own_ident:
+				time.sleep(0.005)
+
+		self.block_add = True
+
 		# starting name is either main1 or Conn1
 		n_conn_name = self._get_new_Conn_name("Conn" if read_only else "main")
+
+		if n_conn_name in self.conns:
+			self.__class__._log.warning("{} already in conns: {}".format(n_conn_name, list(self.conns.keys())))
+
 		Conn = Connection(self.dbfp, read_only=read_only, open_conn=open_conn, persist=persist, key_id=n_conn_name)
 		
 		self.conns.update({n_conn_name: Conn})
+
+		self.block_add = False
+		if own_ident and not self.block_add_q.empty():
+			self.block_add_q.get()
 
 		return Conn
 
@@ -35,19 +59,22 @@ class ConnectionHandler:
 
 			return False
 
-		if not Conn.read_only and "main1" in self.conns and Conn == self.conns["main1"]:
-			key = "main1"
+		if Conn.key_id in self.conns and self.conns[Conn.key_id].thread_id == get_ident():
+			key = Conn.key_id
 
-		# get the id/key that corresponds in self.conns
 		elif Conn in self.conns.values():
-			key = next(key for key, value in self.conns.items() if value == Conn)
+			self.__class__._log.error("remove_conn initiated by thread %(threadID)s without it being the opener, Conn threadID:{} read_only:{} persist:{}".format(Conn.thread_id,
+																																								Conn.read_only,
+																																								Conn.persist),
+																		{"threadID": get_ident(), "_msg_args": ["arg", "value"]})
 
-			if key != Conn.key_id:
-				self.__class__._log.warning("Connection key_id not the same as first value's key in self.conns, multiple same values in self.conns")
+			return False
 
-		# Conn does not match ConnectionHandler' Connections
 		else:
-			self.__class__._log.error("Conn does not match ConnectionHandler's Connections")
+			self.__class__._log.error("remove_conn initiated by thread %(threadID)s but Conn Obj not in conns.values(), Conn threadID:{} read_only:{} persist:{}".format(Conn.thread_id,
+																																										Conn.read_only,
+																																										Conn.persist),
+																		{"threadID": get_ident(), "_msg_args": ["arg", "value"]})
 
 			return False
 
@@ -89,10 +116,9 @@ class ConnectionHandler:
 
 		if not read_only:
 			# check for main Connection
-			if not "main1" in self.conns:
-				self.__class__._log.error("no 'main1' Connection in ConnectionHandler")
-
-				return
+			if "main1" not in self.conns:
+				self._add_conn(open_conn=True, persist=True)
+				re_conn = self.conns["main1"]
 
 			# check if main Connection is connected
 			elif not self.conns["main1"].open_status:
@@ -135,7 +161,7 @@ class ConnectionHandler:
 			re_conn = self._add_conn(read_only=True, persist=persist)
 
 		# also run init_DB if we have it
-		if init_DB is not None:
+		if init_DB is not None and not read_only and persist:
 			init_DB(re_conn)
 
 		return re_conn

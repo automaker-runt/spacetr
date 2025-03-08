@@ -26,6 +26,14 @@ def getHash(inp:str) -> str:
 	return xxhash.xxh32(seed.encode()).hexdigest()
 
 
+def getPureHash(inp:str) -> str:
+	# creates hash without seeding it with timestamp and returns it
+
+	inp = _val_inp(inp)
+
+	return xxhash.xxh32(inp.encode()).hexdigest()
+
+
 def getHash64(inp:str) -> str:
 	# creates hash and returns it
 

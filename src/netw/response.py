@@ -1,7 +1,7 @@
 # response
 #import requests, httpx 			maybe we don't need, maybe we need for exception handling?
 import time
-import xxhash, requests, httpx
+import requests, httpx
 from typing import Union
 
 from hkeep.error import tb
@@ -17,6 +17,7 @@ class Response:
 
 	_log = get_logger(__name__)
 	timeout_until = 0
+	forbidden = False
 	HTTP_REPEAT_INVALIDATION = ("error", "method not allowed", "conflict")
 
 
@@ -44,6 +45,8 @@ class Response:
 		self.HTTP_REPEAT_INVALIDATION = HTTP_REPEAT_INVALIDATION if HTTP_REPEAT_INVALIDATION is not None else self.__class__.HTTP_REPEAT_INVALIDATION
 		self._respID = None
 		self._respID = getHash(self._form_atrib_dict())
+
+		self.Response = None
 
 		# decide which instance to use from
 		# Session, requests, httpx
@@ -78,6 +81,8 @@ class Response:
 				# - multiple timeouts
 				# - rate limited
 			wait(self.__class__.timeout_until, interval=1.04)
+			if self.__class__.forbidden:
+				return
 
 			#print(self.Session.headers)
 

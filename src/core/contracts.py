@@ -1,5 +1,5 @@
 # contracts
-import time
+import time, copy
 from typing import Union
 
 from core.waypoints import Waypoint
@@ -144,6 +144,16 @@ class Contract:
 		self.ctrct_data = contract_data
 
 
+	def __str__(self) -> str:
+		wps = {i["destinationSymbol"] for i in self.delivr_goods}
+		if len(wps) > 1:	
+			goods = [f'{i["unitsRequired"]} {i["tradeSymbol"]} delivery at {i["destinationSymbol"]}' for i in self.delivr_goods]
+		else:
+			goods = [f'{i["unitsRequired"]} {i["tradeSymbol"]}' for i in self.delivr_goods]
+
+		return f"{self.type} {' '.join(goods)}{'' if len(wps) > 1 else ' delivery at '+wps.pop()}"
+
+
 	@property
 	def sptr_id(self):
 		return self.ctrct_data["id"]		# sptr_id
@@ -233,7 +243,7 @@ class Contract:
 
 				return False
 
-		self.__class__._log.info(f"inserted new Contract '{self.sptr_id}'")
+		self.__class__._log.info("inserted new Contract %(ctrct_str)s", {"ctrct_str": str(self), "_msg_args": ["arg", "value"]})
 
 		return True
 
@@ -328,11 +338,11 @@ class Contract:
 
 		# now we need to compare deliver, accepted, fulfilled
 
-		if self.ctrct_data["deliver"] != DB_state["deliver"]:
+		if self.ctrct_data["terms"]["deliver"] != DB_state["terms"]["deliver"]:
 
-			DB_ctrct_goods_sym_fullf = [(i["tradeSymbol"], i["unitsFulfilled"]) for i in DB_state["deliver"]]
+			DB_ctrct_goods_sym_fullf = [(i["tradeSymbol"], i["unitsFulfilled"]) for i in DB_state["terms"]["deliver"]]
 
-			for good in self.ctrct_data["deliver"]:
+			for good in self.ctrct_data["terms"]["deliver"]:
 
 				# maybe all values are the same with DB_ctrct_goods, no change needed
 				if (good["tradeSymbol"], good["unitsFulfilled"]) in DB_ctrct_goods_sym_fullf:
@@ -359,9 +369,33 @@ class Contract:
 		if len(base_updt) > 0:	
 
 			if not self.Objman.updt(table="contracts", cols=list(base_updt.keys()), vals=list(base_updt.values()), unique={"sptr_id": self.sptr_id}):
-				self.__class__._log.error("update_contract failed to update contract sptr_id '{}' ".format(self.sptr_id))
+				self.__class__._log.error("update_contract failed to update Contract sptr_id '{}' ".format(self.sptr_id))
 
 				return False
 
 		return True
 
+
+	def accept_contract(self) -> bool:
+		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["ACCEPT_CONTRACT"].format(contractId=self.sptr_id)
+
+		suc, re = self.Objman.post(url=url)
+
+		if not suc:
+			self.__class__._log.error("accept_contract failed to accept %(ctrct_str)s", {"ctrct_str": str(self), "_msg_args": ["arg", "value"]})
+
+			return False
+
+		re_dec = re.Response.json()
+		# deep copy to give to update_contract as DB_state
+		deepcp = copy.deepcopy(self.ctrct_data)
+		self.ctrct_data.update(re_dec["data"]["contract"])
+
+		if not self.update_contract(deepcp):
+			self.__class__._log.error("accept_contract failed to update DB with %(ctrct_str)s", {"ctrct_str": str(self), "_msg_args": ["arg", "value"]})
+
+			return False
+
+		self.__class__._log.info("accepted Contract %(ctrct_str)s", {"ctrct_str": str(self), "_msg_args": ["arg", "value"]})
+
+		return True

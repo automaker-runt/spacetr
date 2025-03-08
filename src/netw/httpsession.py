@@ -122,7 +122,10 @@ class HttpSession:
 				)
 
 
-	def post(self, url:str, data:dict, mode="data", lib:str="req", headers: Union[dict, None]=None, attempt_lib:int=1, attempt_sess:int=1) -> Response:
+	def post(self, url:str, data: Union[dict, None]=None, mode="data", lib:str="req", headers: Union[dict, None]=None, attempt_lib:int=1, attempt_sess:int=1) -> Response:
+
+		if data is None:
+			data = {}
 
 		if self.Ratelimiter is not None:	
 			self.Ratelimiter.get()
@@ -182,6 +185,10 @@ class HttpSession:
 
 			raise ValueError(f"Session given unknown 'lib' value: '{lib}'")
 
+		# Resp.Response most likey is None when Response.forbidden has been set
+		if Resp is None or Resp.Response is None:
+			# return None and let ObjManager.check_re handle it with netw.validate_re
+			return Resp
 
 		if Resp.invalid_reason not in self.__class__.HTTP_REPEAT_INVALIDATION and not Resp.valid():
 			if Resp.invalid_reason is not None:
@@ -289,12 +296,12 @@ class HttpSession:
 		if self.SessR._open_status:
 			self.SessR._open_status = False
 			self.SessR.close()
-			self.__class__._log.info(f"requests Session with _SID '{self.SessR._SID}' closed")
+			self.__class__._log.info("requests Session with _SID '%(SessR_SID)s' closed", {"SessR_SID": self.SessR._SID, "_msg_args": ["arg", "value"]})
 
 		if self.SessH._open_status:
 			self.SessH._open_status = False
 			self.SessH.close()
-			self.__class__._log.info(f"httpx Session with _SID '{self.SessH._SID}' closed")
+			self.__class__._log.info("requests Session with _SID '%(SessH_SID)s' closed", {"SessH_SID": self.SessH._SID, "_msg_args": ["arg", "value"]})
 
 		return True
 
