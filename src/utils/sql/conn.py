@@ -59,16 +59,18 @@ class Connection:
 				return
 		
 		if conn is not None:
-			# log main Connection
-			if self.persist:
-				self.__class__._log.info(f"opened Connection '{_id}' to DB {short(dbfp)}{' as read only' if read_only else ''}")
-
-			else:
-				self.__class__._log.debug(f"opened Connection '{_id}' to DB {short(dbfp)}{' as read only' if read_only else ''}")
 			
 			self.Conn = conn
 			self.open_status = True
 			self.thread_id = get_ident()
+			
+			# log main Connection
+			if self.persist:
+				self.__class__._log.info("opened Connection '{}' to DB {}{} with %(threadID)s".format(_id, short(dbfp), ' as read only' if read_only else ''),  
+							 																	{"threadID": self.thread_id, "_msg_args": ["arg", "value"]})
+
+			else:
+				self.__class__._log.debug(f"opened Connection '{_id}' to DB {short(dbfp)}{' as read only' if read_only else ''}")			
 
 		return conn
 

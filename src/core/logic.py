@@ -28,6 +28,8 @@ from utils.strings.shorten import short
 
 class Ships:
 
+	_log = get_logger(__name__)
+
 
 	def __init__(self, ShipH:dict):
 		self.ShipH = ShipH
@@ -35,18 +37,15 @@ class Ships:
 		self.init_ships_df()
 
 
-	def init_ships_df(self) -> pd.core.frame.DataFrame:
-		ships = None
+	def init_ships_df(self) -> None:
+		ships = pd.DataFrame()
 
-		for i in self.ShipH.values():
-			if len(self.ShipH.values()) == 1 or ships is None:
-				ships = i.sdf[0]
-
-			else:
+		if len(self.ShipH.values()) == 1:
+			ships = list(self.ShipH.values())[0].sdf[0]
+		
+		else:
+			for i in self.ShipH.values():
 				ships = pd.concat(ships, i.sdf[0]).reset_index()
-
-		if ships is None:
-			ships = pd.DataFrame()
 
 		self.df = ships
 
@@ -65,10 +64,12 @@ class Core:
 					NetwSession:HttpSession,
 					Conf:Config,
 					SqlHan:SqlHand,
+					MrktList:list,
 					logic_event_quit:threading.Event,
 					main_thr_events,
 					wake_up_qs,
-					main_threads):
+					main_threads,
+					recalibrate_ships_info_ev):
 		
 		self.logic_event = logic_event_quit
 		self.core_terminated_event = threading.Event()
@@ -83,10 +84,11 @@ class Core:
 		# while that doesn't complete because Objman waits t_core to be stopped
 		self.core_terminated_event.set()
 
+		self.MrktList = MrktList
 		self.main_thr_events = main_thr_events
 		self.wake_up_qs = wake_up_qs
 		self.main_threads = main_threads
-
+		self.recalibrate_ships_info_ev = recalibrate_ships_info_ev
 		self.core_threads = list()
 		self.core_thr_events = list()
 
@@ -109,7 +111,7 @@ class Core:
 			time.sleep(10)
 
 		if waited:
-			self.__class__._log.info(f"core proceded with start after waiting for API to be accessible for {int(time.time())-start_ti}s")
+			self._log.info(f"core proceded with start after waiting for API to be accessible for {int(time.time())-start_ti}s")
 
 		if self.logic_event.is_set():
 			return
@@ -154,6 +156,7 @@ class Core:
 
 			# Marketdata
 			Mrkt = Market(self.Objman)
+			self.MrktList.append(Mrkt)
 			mrktd_logi = MarketdataLogic(self.Objman, Mrkt, Shps, marketdata_logic_event)
 			self.core_threads.append(mrktd_logi.thr)
 
@@ -162,18 +165,21 @@ class Core:
 			actf_logi = ActionFinder(self.Objman, Shps, Mrkt, self.ShipHandlers, actf_Q, actionfinder_logic_event)
 			self.core_threads.append(actf_logi.thr)
 
-		self.__class__._log.info("[t_core] instantiated with id %(threadID)s", {"threadID": threading.get_ident(), "_msg_args": ["arg", "value"]})
+		self._log.info("[t_core] instantiated with id %(threadID)s", {"threadID": threading.get_ident(), "_msg_args": ["arg", "value"]})
 
 		
 		
 		# TODO:
 		# make Task Object, implement tasks table in scheme.ex...
-		# go with pandas for calc_hoops in Task
+		# implement reloading Tasks to the assigned Ships from before restarting spacetr
 
 		# start main logic loop
 		while not self.logic_event.is_set() and not self.Objman.is_fresh_reset:
 
-
+			if self.recalibrate_ships_info_ev.is_set():
+				self.recalibrate_ships_info()
+				self.recalibrate_ships_info_ev.clear()
+			
 			time.sleep(1)
 
 		
@@ -182,7 +188,7 @@ class Core:
 		# close thread Connections
 		# close open DB connections
 		if not self.Objman.Sqhlhan.ConnHandler.remove_thr_conns():
-			self.__class__._log.error(f"core failed closing all thread Connections to DB {short(self.Objman.Sqhlhan.dbfp)}")
+			self._log.error(f"core failed closing all thread Connections to DB {short(self.Objman.Sqhlhan.dbfp)}")
 
 		# remove t_core's threads from main_thr_events list
 		for ev in self.core_thr_events:
@@ -190,10 +196,11 @@ class Core:
 			ev.set()
 
 		# set this to indicate to Objman that it can clear logic_event
-		# this thread t_core know it just needs to restart, not end
+		# this thread t_core knows it just needs to restart, not end
 		self.core_terminated_event.set()
 		time.sleep(1)
 
+		self.MrktList.clear()
 		self.core_thr_events.clear()
 
 		for t in self.core_threads:
@@ -203,7 +210,7 @@ class Core:
 			t.join(self.Objman.Conf.config["THREAD_CORE_JOIN_TIMEOUT"])
 
 			if t.is_alive():
-				self.__class__._log.error(f"thread '{t.name}' failed to self-close")
+				self._log.error(f"thread '{t.name}' failed to self-close")
 				# TODO collect all zombie threads in a list
 
 			# don't remove own thread from main_threads list
@@ -215,7 +222,7 @@ class Core:
 			# need to restart
 			self.core()
 		else:
-			self.__class__._log.info(f"[t_core] closed")
+			self._log.info(f"[t_core] closed")
 
 
 	def start(self) -> bool:
@@ -257,7 +264,7 @@ class Core:
 
 
 	def register_new_agent(self, attempt:int=0) -> bool:
-		url, data = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REGISTER"]
+		url, data = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REGISTER"])
 		# get random predefined callsign & faction
 		data.update({
 			"symbol": "ASIDE_"+self.Objman.Conf.config["CALLSIGN_SUFX"][random.randint(0, len(self.Objman.Conf.config["CALLSIGN_SUFX"])-1)],
@@ -267,18 +274,18 @@ class Core:
 		suc, re = self.Objman.post(url=url, data=data)
 
 		if not suc:
-			self.__class__._log.error("register_new_agent failed")
+			self._log.error("register_new_agent failed")
 			if attempt < 5:
 				time.sleep(3)
 
 				return self.register_new_agent(attempt+1)
 
 			else:
-				self.__class__._log.error(f"register_new_agent failed registering new Agent after {attempt} attempts")
+				self._log.error(f"register_new_agent failed registering new Agent after {attempt} attempts")
 				
 				return False
 
-		self.__class__._log.info("New Agent registered with Callsign '{}' for faction '{}'".format(data["symbol"], data["faction"]))
+		self._log.info("New Agent registered with Callsign '{}' for faction '{}'".format(data["symbol"], data["faction"]))
 		
 		re_dec = re.Response.json()
 
@@ -286,7 +293,7 @@ class Core:
 		bearer.update({"AGENT": {"Authorization": "Bearer "+re_dec["data"]["token"].strip()}})
 		# save new bearer
 		if not jsonf.save(bearer, ".env"):
-			self.__class__._log.error("register_new_agent failed saving new token in .env")
+			self._log.error("register_new_agent failed saving new token in .env")
 
 		self.Objman.Netwsess.set_auth_header(header=bearer["AGENT"], host="spacetraders.io")
 
@@ -298,9 +305,9 @@ class Core:
 						"updated": int(time.time())
 		}
 
-		# insert
-		if not self.Objman.ins("headq", list(headq_val.values())):
-			self.__class__._log.error(f"register_new_agent failed inserting new headq {headq_val}")
+		# if headquarter exists, insert it
+		if headq_val["systemsymbol"] != "" and not self.Objman.ins("headq", list(headq_val.values())):
+			self._log.error(f"register_new_agent failed inserting new headq {headq_val}")
 
 			return False
 
@@ -312,3 +319,18 @@ class Core:
 			self.Objman.Agent.data["shipCount"] = 2
 		
 		return True
+	
+
+	def recalibrate_ships_info(self):
+		# get the all the Ships from API from first ShipHandler
+		SH = list(self.ShipHandlers.values())[0]
+		list_raw_ships = SH.api_get_all_ships()
+		
+		# something
+		for Ship in list_raw_ships:
+			for SH in self.ShipHandlers.values():
+				if Ship["symbol"] in SH.inventory:
+					SH.inventory[Ship["symbol"]]._update_state(Ship)
+					break
+			else:
+				self._log.error(f"recalibrate_ships_info failed to find Ship '{Ship['symbol']}' in any ShipHandler")

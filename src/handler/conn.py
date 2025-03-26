@@ -104,6 +104,9 @@ class ConnectionHandler:
 		for Conn in remove_conns:
 			results.append(self.remove_conn(self.conns[Conn], pragma, force=True))
 
+		if len(results) == 0:
+			results.append(True)
+		
 		return all(results)
 
 

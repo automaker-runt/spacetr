@@ -24,3 +24,23 @@ def file(fp:str, new_fp:str) -> bool:
 
 	else:
 		return True
+
+
+def sqlite_files(fp:str, new_fp:str) -> bool:
+
+	all_fp = [(fp, new_fp)]
+
+	if os.path.exists(fp+'-shm'):
+		shm = fp+'-shm'
+		nshm = new_fp+'-shm'
+		all_fp.append((shm, nshm))
+
+	if os.path.exists(fp+'-wal'):
+		wal = fp+'-shm'
+		nwal = new_fp+'-shm'
+		all_fp.append((wal, nwal))
+
+	if any(not file(*i) for i in all_fp):
+		return False
+
+	return True

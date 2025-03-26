@@ -12,16 +12,16 @@ class RateLimiter:
 	
 	def get(self) -> None:
 
-		# 
+		# add to list if not at max
 		if len(self.gets) < self.max_p_s:
 			self.gets.append(time.time())
 			
 			return
 
 		else:
-			while self.gets[0] +1.0 > time.time():
-				time.sleep(0.003)
-			
+			if self.gets[0] +1.0 > time.time():
+				time.sleep(max(0.001,
+				   			self.gets[0] +1.0 - time.time()))			
 
 			self.gets.pop(0)
 			self.gets.append(time.time())

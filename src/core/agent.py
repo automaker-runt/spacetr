@@ -83,31 +83,3 @@ class Agent:
 			re_dec = re.Response.json()
 
 			return re_dec["data"]
-
-
-	def insert_(self) -> bool:
-		standard_inp = {
-							"created": self.created,
-							"name": self.data["symbol"],
-							"credits": self.data["credits"],
-							"faction": self.data["startingFaction"],
-							"bearer": self.bearer,
-							"updated": int(time.time()),
-		}
-		
-		if len(inp) == 0 or not any(i in inp for i in standard_inp.keys()):
-			cls._log.error(f"insert failed because of no valid inp, len '{len(inp)}'")
-
-			return False
-
-		standard_inp.update(inp)
-
-		if not self.Objman.ins("agents", list(standard_inp.values())):
-			cls._log.error(f"insert failed with values '{list(standard_inp.values())}'")
-
-			return False
-
-		cls._log.info("New competitive Agent '{}' inserted".format(standard_inp["name"]))
-
-		return True
-

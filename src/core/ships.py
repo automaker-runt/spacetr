@@ -1,5 +1,5 @@
 # ships
-import time, json, copy
+import time, math, copy
 import threading
 import pandas as pd
 from collections import Counter
@@ -9,10 +9,11 @@ from typing import Union
 from core.utils import coord, meta, netw
 from core.utils.objmanager import ObjManager
 from core.waypoints import Waypoint
+from hkeep.log.logger import get_logger
 from utils.list import create
 from utils.sql import strings
+from utils.strings.shorten import short
 from utils.time import ISO_to_epoch, conv_time_time_to_def
-from hkeep.log.logger import get_logger
 
 
 class Ship:
@@ -98,7 +99,7 @@ class Ship:
 
 		# if read ship symbol through DB, need to load the rest
 		if self.jj["frame"] is None:
-			self.jj = self.select_ship()
+			self.jj = self.select_ship()		
 		
 		self.prev_jj = copy.deepcopy(self.jj)
 		self.prev_jj2 = copy.deepcopy(self.jj2)
@@ -107,7 +108,29 @@ class Ship:
 
 		self.__class__._log.info(f"new ship '{self.name}.{self.frame.lower()}' added to fleet '{fleet}'")
 
+		# manage loaded status "IN_TRANSIT"
+		if self.status == "IN_TRANSIT":
+			
+			def put_status_in_orbit(waiter: Union[None, float]=None):
+				if waiter is not None:
+					time.sleep(waiter)
 
+				self.jj["nav"]["status"] = "IN_ORBIT"
+				self._update_state()
+
+				# when executed as thread with waiter not None, close DB connection
+				if waiter is not None and not self.Objman.Sqhlhan.ConnHandler.remove_thr_conns():
+					self.__class__._log.error(f"failed to remove thread connections to DB {short(self.Objman.Sqhlhan.dbfp)}")
+			
+			# can change it right now
+			if ISO_to_epoch(self.arrival) <= time.time():
+				put_status_in_orbit()
+			
+			# can't change it right now, wait via threading.Timer
+			else:
+				threading.Thread(target=put_status_in_orbit, args=(ISO_to_epoch(self.arrival) - time.time(),), daemon=True).start()
+	
+	
 	def __str__(self) -> str:
 		return f"{self.name}.{self.frame.lower()}"
 
@@ -222,31 +245,52 @@ class Ship:
 
 
 	def _update_state(self, inp: Union[dict, None]=None):
-		df_updated = False
-		if inp is None:
-			if not self.jj == self.prev_jj:
-				self.update_ship(self.prev_jj)
-				self.prev_jj = copy.deepcopy(self.jj)
-				self.prev_jj2 = copy.deepcopy(self.jj2)
+		"""
+		Updates the ship's state in memory and database.
 		
-				self.updt_sdf()
-				df_updated = True
-
-		else:
-			DB_state = copy.deepcopy(self.jj)
-			self.prev_jj2 = copy.deepcopy(self.jj2)
-			self.jj.update(inp)
-
-			self.updt_sdf()
-			df_updated = True
-
-			# if DB state not memory state
-			if not DB_state == self.jj:
-				self.update_ship(DB_state)
+		When called without arguments:
+		- Compares current state (jj, jj2) with previous state (prev_jj, prev_jj2)
+		- If different, updates the database with current state
+		
+		When called with inp argument:
+		- Updates the ship's state (jj) with the provided input
+		- Updates the database with the new state
+		
+		In all cases, updates the DataFrame representation via updt_sdf()
+		"""
+		if inp is None:
+			# No input provided - check if current state differs from previous state
+			sdf_update_needed = False
+			
+			# Check if main ship data changed
+			if self.jj != self.prev_jj:
+				# Update database with current state, providing DB_state as argument
+				self.update_ship(self.prev_jj)
+				# Store current state as previous state
 				self.prev_jj = copy.deepcopy(self.jj)
-
-		if not df_updated and self.jj2 != self.prev_jj2:
+				sdf_update_needed = True
+				
+			# Check if secondary ship data changed
+			if self.jj2 != self.prev_jj2:
+				self.prev_jj2 = copy.deepcopy(self.jj2)
+				sdf_update_needed = True
+		else:
+			sdf_update_needed = False
+			# Input provided - update ship state with input
+			DB_state = copy.deepcopy(self.jj)
+			self.jj.update(inp)
+			
+			# Update database if state changed
+			if DB_state != self.jj:
+				sdf_update_needed = True
+				self.update_ship(DB_state)
+				
+			# Store current state as previous state
+			self.prev_jj = copy.deepcopy(self.jj)
 			self.prev_jj2 = copy.deepcopy(self.jj2)
+		
+		# Update the DataFrame representation
+		if sdf_update_needed:
 			self.updt_sdf()
 
 
@@ -318,11 +362,11 @@ class Ship:
 
 				return False
 
-			elif dwnti_func:
+			if dwnti_func:
 				dwnti_func(self.jj)
 
 		# we are in orbit and can go now
-		url, data = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_WAYPOINT"]
+		url, data = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_WAYPOINT"])
 
 		url = url.format(ShipSymbol=self.name)
 		data.update({"waypointSymbol": coord.wp})
@@ -340,9 +384,7 @@ class Ship:
 		if dwnti_func:
 			self.__class__._log.info(f"[{threading.current_thread().name}] {str(self)} on the way to {str(coord)}")
 			dwnti_func(self.jj)
-			self.jj["nav"]["status"] = "IN_ORBIT"
-			self._update_state()
-
+			
 		else:
 			self.__class__._log.info(f"{str(self)} on the way to {str(coord)}")
 
@@ -356,7 +398,7 @@ class Ship:
 
 
 	def go_orbit(self) -> bool:
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_ORBIT"]
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["GO_ORBIT"])
 
 		url = url.format(ShipSymbol=self.name)
 
@@ -378,7 +420,7 @@ class Ship:
 
 
 	def go_dock(self) -> bool:
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["DOCK_SHIP"]
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["DOCK_SHIP"])
 
 		url = url.format(ShipSymbol=self.name)
 
@@ -405,11 +447,11 @@ class Ship:
 
 				return False
 
-			elif dwnti_func:
+			if dwnti_func:
 				dwnti_func(self.jj)
 
 		# we are in orbit, we can extract now
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["EXTRACT_ORES"]
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["EXTRACT_ORES"])
 
 		url = url.format(miningShipSymbol=self.name)
 
@@ -421,10 +463,17 @@ class Ship:
 			return False
 		
 		# need to update Ship state in self.jj
-		self._update_state(re.Response.json()["data"])
+		re_dec = re.Response.json()
+		self.jj["cooldown"] = re_dec["data"]["cooldown"]
+		self.jj["cargo"] = re_dec["data"]["cargo"]
+		self._update_state()
 
 		if dwnti_func:
-			self.__class__._log.info(f"[{threading.current_thread().name}] {str(self)} extracted ores at {str(self.coordinates)}")
+			self.__class__._log.info("[{}] {} extracted {} {} at {}".format(threading.current_thread().name,
+																			str(self),
+																			re_dec["data"]["extraction"]["yield"]["units"],
+																			re_dec["data"]["extraction"]["yield"]["symbol"],
+																			str(self.coordinates)))
 			dwnti_func(self.jj)
 		else:
 			self.__class__._log.info(f"{str(self)} extracted ores at {str(self.coordinates)}")
@@ -432,21 +481,29 @@ class Ship:
 		return True	
 
 
-	def refuel(self, dwnti_func=None) -> bool:
+	def refuel(self, amount:int=0, dwnti_func=None) -> tuple[int, bool]:
 		# one unit at MARKETPLACE replenishes 100 units in ship tank
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REFUEL"]
+		if amount == 0:
+			url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REFUEL"])
+			data = dict()
+		else:
+			amount = math.ceil(amount/100)			
+			url, data = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["REFUEL_AMT"])
+			data.update({"units": amount, "fromCargo": False})
 
 		url = url.format(ShipSymbol=self.name)
 
-		suc, re = self.Objman.post(url=url, data=dict())
+		suc, re = self.Objman.post(url=url, data=data)
 
 		if not suc:
 			self.__class__._log.error(f"refuel {str(self)} at {str(self.coordinates)} ({re.Response._reqID})")
 
-			return False
+			return 0, False
+		
+		re_dec = re.Response.json()
 		
 		# need to update Ship state in self.jj
-		self._update_state(re.Response.json()["data"])
+		self._update_state({"fuel": re_dec["data"]["fuel"]})
 
 		if dwnti_func:
 			self.__class__._log.info(f"[{threading.current_thread().name}] {str(self)} refueled at {str(self.coordinates)}")
@@ -454,11 +511,11 @@ class Ship:
 		else:
 			self.__class__._log.info(f"{str(self)} refueled at {str(self.coordinates)}")
 		
-		return True
+		return re_dec["data"]["transaction"]["totalPrice"], True
 
 
 	def sell_good(self, good:str, quantity:int) -> bool:
-		url, data = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["SELL"]
+		url, data = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["SELL"])
 
 		url = url.format(ShipSymbol=self.name)
 		data.update({"symbol": good, "units": str(quantity)})
@@ -1228,7 +1285,7 @@ class Ship:
 				less = list()
 				for mnt in mounts:
 					if mounts.count(mnt) < li_mounts_sym.count(mnt):
-						less.append(mod)
+						less.append(mnt)
 					elif mounts.count(mnt) == li_mounts_sym.count(mnt):
 						pass
 					else:
@@ -1331,20 +1388,20 @@ class Ship:
 
 		if "frame" in diff:
 			direct_updt.update({
-				"frame_condition": self.jj["frame"]["condition"],
-				"frame_integrity": ISO_to_epoch(self.jj["frame"]["integrity"])
+				"frame_condition": round(self.jj["frame"]["condition"], 4),
+				"frame_integrity": round(self.jj["frame"]["integrity"], 4)
 				})
 
 		if "reactor" in diff:
 			direct_updt.update({
-				"reactor_condition": self.jj["reactor"]["condition"],
-				"reactor_integrity": ISO_to_epoch(self.jj["reactor"]["integrity"])
+				"reactor_condition": round(self.jj["reactor"]["condition"], 4),
+				"reactor_integrity": round(self.jj["reactor"]["integrity"], 4)
 				})
 
-		if "enigne" in diff:
+		if "engine" in diff:
 			direct_updt.update({
-				"enigne_condition": self.jj["enigne"]["condition"],
-				"enigne_integrity": ISO_to_epoch(self.jj["enigne"]["integrity"])
+				"engine_condition": round(self.jj["engine"]["condition"], 4),
+				"engine_integrity": round(self.jj["engine"]["integrity"], 4)
 				})
 
 		if "modules" in diff:
@@ -1508,6 +1565,24 @@ class Ship:
 		df = pd.json_normalize(_di)
 
 		if self.sdf is not None and "symbol" in self.sdf[0].columns and any(self.sdf[0].symbol.str.fullmatch(self.name)):
+			# Create a copy of the existing DataFrame to get the dtypes
+			if len(self.sdf[0]) > 0:
+				# Get dtypes from existing DataFrame
+				dtypes = self.sdf[0].dtypes.to_dict()
+				
+				# Convert columns in the new DataFrame to match the dtypes of the existing DataFrame
+				# convert columns prone to int/float changes
+				for col in ("frame.condition", "frame.integrity",
+							"engine.condition", "engine.integrity",
+							"reactor.condition", "reactor.integrity"):
+					if col in dtypes:
+						try:
+							df[col] = df[col].astype(dtypes[col])
+						except (ValueError, TypeError):
+							# If conversion fails, keep the original dtype
+							pass
+			
+			# Now update the DataFrame with type-compatible values
 			self.sdf[0].loc[self.sdf[0]["symbol"] == self.name] = df.loc[df['symbol'] == self.name]
 		elif self.sdf is not None and "symbol" in self.sdf[0].columns:
 			self.sdf[0] = pd.concat([self.sdf[0], df])

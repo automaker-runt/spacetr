@@ -1,5 +1,5 @@
 # tasks
-import time
+import time, copy, random, logging
 import threading
 from typing import Union
 
@@ -7,9 +7,12 @@ from core.ships import Ship
 from core.utils import dfop
 from core.utils.coord import GameCoord, distance
 from core.utils.marketdata import cycle
+from core.navigation import Navigation
 from core.utils.objmanager import ObjManager
 from core.waypoints import Waypoint
+from hkeep.error import tb
 from hkeep.log.logger import get_logger
+from utils.strings.shorten import short
 from utils.time import wait, ISO_to_epoch
 
 
@@ -74,7 +77,8 @@ class Task:
 
 	def __init__(self, PT:PreTask,
 						Mrkt,
-						prio: Union[int, None]=None):
+						prio: Union[int, None]=None,
+						liberty_on_done:bool=True):
 		
 		PT.ship.has_task = True
 		PT.ship.task_id = PT.id_
@@ -82,6 +86,7 @@ class Task:
 		self.PT = PT
 		self.Mrkt = Mrkt
 		self.prio = prio if prio is not None else PT.prio
+		self.liberty_on_done = liberty_on_done
 
 		if self not in self.__class__.T_list:
 			self.__class__.T_list.append(self)
@@ -89,7 +94,7 @@ class Task:
 		# PT.schedule?
 
 		self.ev_quit = threading.Event()
-		self.thr = threading.Thread(target=self.work, name=f't_{self.tsk_type[0].upper()}Tsk_{self.id_[-5:]}', daemon=False)
+		self.thr = threading.Thread(target=self.work, name=f't_{self.tsk_type[0].upper()}Tsk_{self.id_[-5:]}', daemon=True)
 		self.thr.start()
 
 		self.__class__._log.info(f"new {str(self)}")
@@ -169,10 +174,48 @@ class Task:
 
 
 	def work(self):
+		# inheritance
 		# find out the type of PT, take according measures
 		pass
 
 
+	def end_work(self, finished:bool):
+		if self.liberty_on_done:	
+			self.ship.has_task = False
+		self.ship.task_id = None
+		self.ship._update_state()
+
+		# close open DB connections
+		if not self.Objman.Sqhlhan.ConnHandler.remove_thr_conns():
+			self.__class__._log.error(f"[{self.thr.name}] work failed closing all thread Connections to DB {short(self.Objman.Sqhlhan.dbfp)}")
+
+		if not finished:	
+			self.__class__._log.info(f"[{self.thr.name}] ended")
+		else:
+			self.__class__._log.info(f"[{self.thr.name}] finished")
+
+
+	def hop_in_range(self, distance_to_target: float, mode:str="CRUISE", current_fuel: Union[int, None]=None) -> bool:
+		"""
+		Determines if ship should refuel based on distance and current fuel
+		"""
+		if current_fuel is None:
+			current_fuel = self.ship.fuel
+
+		if mode in ("CRUISE", "STEALTH"):
+			fuel_needed = round(distance_to_target)
+
+		elif mode == "DRIFT":
+			fuel_needed = 1
+
+		elif mode == "BURN":
+			amt = 2*round(distance_to_target)
+			fuel_needed = max(2, amt)
+		
+		# return whether hop is in range
+		return current_fuel >= fuel_needed
+	
+	
 	def check_markets(self):
 		if self.go:
 			# find out if current waypoint has shipyard or marketplace to know what to query
@@ -191,7 +234,8 @@ class Task:
 		# queries for shipyard data
 		# attempts to insert new ships
 
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["SHIPYARD_DATA"].format(systemSymbol=self.sys, WaypointSymbol=self.ship.waypoint)
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["SHIPYARD_DATA"])
+		url = url.format(systemSymbol=self.sys, WaypointSymbol=self.ship.waypoint)
 		suc, re = self.Objman.get(url=url)
 
 		if not suc: 
@@ -213,7 +257,8 @@ class Task:
 		# queries for marketdata
 		# attempts to insert new goods
 
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["MARKETPLACE_DATA"].format(systemSymbol=self.sys, WaypointSymbol=self.ship.waypoint)
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["MARKETPLACE_DATA"])
+		url = url.format(systemSymbol=self.sys, WaypointSymbol=self.ship.waypoint)
 		suc, re = self.Objman.get(url=url)
 
 		if not suc: 
@@ -251,69 +296,84 @@ class Task:
 		# blocks the thread until either
 		# - cooldown runs up
 		# - arrival passed
+		# - ev_quit is set
 		if "cooldown" in jj and "expiration" in jj["cooldown"]:
 			wait(ISO_to_epoch(jj["cooldown"]["expiration"]), interval=1.0, ev_quit=self.ev_quit)
 
-		if "nav" in jj and "route" in jj["nav"]:
+		# only wait for arrival if ship.status is not DOCKED
+		if self.ship.status != "DOCKED" and "nav" in jj and "route" in jj["nav"]:
 			wait(ISO_to_epoch(jj["nav"]["route"]["arrival"]), interval=1.0, ev_quit=self.ev_quit)
+			if self.go:
+				self.ship.jj["nav"]["status"] = "IN_ORBIT"
+				self.ship._update_state()
 
 
-	def journey_waypoint(self, coord:GameCoord, mode:str="CRUISE") -> bool:
+	def calculate_furthest_hop(self, start_coord:GameCoord, target_coord:GameCoord, mode:str) -> GameCoord:
+		"""
+		Calculates the furthest possible waypoint in the direction of the target
+		that can be reached with current fuel levels
+		"""
+		# Get refuelable waypoints
+		direction_wps = dfop.wp_type_traits_lookup(self.df_sys_wps, ["FUEL_STATION"], ["MARKETPLACE"])
+		
+		current_dist = distance(start_coord, target_coord)
+		# Filter to only waypoints closer to target than current position
+		closer_wps = direction_wps[direction_wps.apply(lambda x: 
+			distance(x.GmCrd, target_coord) < current_dist, axis=1)]
+		
+		# Find furthest reachable waypoint
+		reachable = closer_wps[closer_wps.apply(lambda x: 
+										self.ship.in_range(x.GmCrd, mode=mode, reserve=0.01), axis=1)]
+			
+		if len(reachable) > 0:
+			return dfop.furthest(reachable, target_coord)
+			
+		return None
+	
+	
+	def follow_path(self, coord:GameCoord) -> bool:
 		'''
-		does the route planning + refueling
+		Creates and follows a path of waypoints
 		'''
-		if self.go and self.ship.frame.lower() == "probe":
-			return self.ship.go_waypoint(coord=coord, mode="CRUISE", dwnti_func=self.shp_dwnti_func)
+		# omegalul Navigation Class by AI
+		Nav = Navigation(self.Objman, self.df_sys_wps, self.Mrkt.df)
+		path, est_total_cost, refuel_cost = Nav.optimize_route(self.ship.coordinates,
+											coord,
+											self.ship.fuel,
+											self.ship.fuelCapacity,
+											self.flight_mode)
+		if not path:
+			self.__class__._log.warning(f"[{self.thr.name}] follow_path returned no path from {str(self.ship.coordinates)} to {str(coord)} {str(self)}")
 
-		# we can empty our tank, because we can buy fuel there
-		if (self.go and
-			dfop.wp_type_traits_lookup(self.df_sys_wps, ["FUEL_STATION"], ["MARKETPLACE"]).wp_symbol.isin([coord.wp]).any()):
-
-			# check for range with reduced reserve at current fuel tank level
-			if self.go and self.ship.in_range(coord, mode=mode, reserve=0.01):
-				return self.ship.go_waypoint(coord=coord, mode=mode, dwnti_func=self.shp_dwnti_func)
-
-			# now check if we can go there with max fuel tank
-			# from the nearest place (even where we are now, with fuel)
-			elif self.go:
-				# find nearest place to get full tank
-				coord_b = dfop.nearest(dfop.wp_type_traits_lookup(self.df_sys_wps, ["FUEL_STATION"], ["MARKETPLACE"]),
-										self.ship.coordinates)
-
-				# only if coord_b is in range
-				if self.go and self.ship.in_range(coord_b, mode=mode, reserve=0.01):
-					# check if one can go from there emptying the tank
-					if self.go and self.ship.in_range(coord,
-														mode=mode,
-														current_fuel=self.ship.fuelCapacity,
-														reserve=0.01,
-														coord_b=coord_b):
-
-						if self.go and coord_b.wp != self.ship.waypoint:
-							# go to coord_b
-							if not self.ship.go_waypoint(coord=coord_b, mode=mode, dwnti_func=self.shp_dwnti_func):
-								return False
-						# refuel to max at coord_b
-						if self.go and not self.ship.refuel(dwnti_func=self.shp_dwnti_func):
-							return False
-
-						if self.go:
-							return self.ship.go_waypoint(coord=coord, mode=mode, dwnti_func=self.shp_dwnti_func)
-
-					# need to calculate furthest hop in direction of coord
-
-				# coord_b, being the nearest to get full tank from current position, is out of range with reserve=0.01
-				# need to go by mode="DRIFT"
-				elif self.go:
-					return self.ship.go_waypoint(coord=coord, mode="DRIFT", dwnti_func=self.shp_dwnti_func)
+			return False
+		
+		print()
+		print(f"[{self.thr.name}] {str(self.ship)} on path with {len(path)} hops with planned fuel cost µ{refuel_cost} and total cost {est_total_cost}")
+		print(f"[{self.thr.name}] {str(self.ship)} {len(path)} hops : {list((str(i['coord']), i['refuel'], i['refuel_amount'], i['mode']) for i in path if 'coord' in i)}")
 
 		return True
+		
+		for wp in path:
+			self.check_markets()
 
+			if not self.ship.go_waypoint(coord=wp["coord"], mode=self.flight_mode, dwnti_func=self.shp_dwnti_func):
+				return False
+			
+			if wp["refuel"]:
+				payed, suc = self.ship.refuel(amount=wp["refuel_amount"], dwnti_func=self.shp_dwnti_func)
+				if not suc:
+					return False
+				cost += payed
+
+		if est_total_cost != 0:
+			self.__class__._log.info(f"[{self.thr.name}] {str(self.ship)} followed path to {str(path[-1]['coord'])} costing µ{cost} (planned µ{est_total_cost})")
+		else:
+			self.__class__._log.info(f"[{self.thr.name}] {str(self.ship)} followed path to {str(path[-1]['coord'])} costing µ{cost}")
+
+		return True
 		
 	
 class ContractTask(Task):
-
-
 	
 
 	@property
@@ -347,6 +407,52 @@ class ContractTask(Task):
 		pass
 
 
+	def deliver(self) -> bool:
+		# go with ship to the deliver waypoint
+		if not self.follow_path(self.GmCrd_dict["deliver"]):			
+			self.__class__._log.error(f"[{self.thr.name}] deliver failed to find path {str(self)}")
+			
+			return False
+		
+		# dock ship
+		if not self.ship.go_dock():
+			self.__class__._log.error("deliver failed go_dock at '{}'".format(str(self.GmCrd_dict["deliver"])))
+
+			return False
+
+		self.shp_dwnti_func(self.ship.jj)
+
+		# deliver good
+		url, data = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["DELIVER_CONTRACT"])
+		url = url.format(contractId=self.tsk_item.sptr_id)
+		data.update({	
+						"shipSymbol": self.ship.name,
+						"tradeSymbol": self.extras["good"]["tradeSymbol"],
+						"units": next(i["units"] for i in self.ship.cargoInv if i["symbol"] == self.extras["good"]["tradeSymbol"])
+						})
+
+		suc, re = self.Objman.post(url=url, data=data)
+
+		if not suc:
+			self.__class__._log.error("deliver failed to deliver {} {} at '{}'".format(data["units"], data["tradeSymbol"], str(self.GmCrd_dict["deliver"])))
+
+			return False
+
+		re_dec = re.Response.json()
+
+		# update the contract details and ship cargo
+		self.extras["good"] = re_dec["data"]["contract"]["terms"]["deliver"][0]
+		old_ctrct_data = copy.deepcopy(self.tsk_item.ctrct_data)
+		self.tsk_item.ctrct_data = re_dec["data"]["contract"].copy()
+		self.tsk_item.update_contract(DB_state=old_ctrct_data)
+		self.ship.jj["cargo"] = re_dec["data"]["cargo"]
+		self.ship._update_state()
+
+		self.shp_dwnti_func(self.ship.jj)
+
+		return True
+	
+
 	def work(self):
 
 		self.__class__._log.info("[{}] instantiated with id %(threadID)s".format(self.thr.name), {"threadID": threading.get_ident(), "_msg_args": ["arg", "value"]})
@@ -356,19 +462,20 @@ class ContractTask(Task):
 
 		finished = False
 
-		while self.go:
-			time.sleep(1)
 		while self.go and not finished:
 			start_ti = int(time.time())
 
+			self.check_markets()
+						
 			# go deliver if done
 			if self.go and self.ctrct_fulf:
+				assert self.deliver(), f"Error deliver {str(self)}"
 				finished = True
 
 			# if ship has full cargo, decide what to do with it
 			if self.go and self.inv_full:
 				pass
-				# either or comobination of
+				# either or combination of
 				# go to marketplace and sell, if near delivery wp -> go and deliver if it is a great chunk of storage already
 				# jettison
 
@@ -381,26 +488,32 @@ class ContractTask(Task):
 
 			# if ship is not where it is mining, move it there
 			elif self.go and self.ship.waypoint != self.GmCrd_dict["mine"].wp:
-				assert self.journey_waypoint(self.GmCrd_dict["mine"], mode=self.flight_mode), "Error journey_waypoint to '{}' {}".format(str(self.GmCrd_dict["mine"]), str(self))
-				# check if ship could refuel (has 100+ less than full capacity, 1 fuel at MARKETPLACE = 100 fuel capacity)
+				""" print()
+				for _, wp in self.df_sys_wps.drop_duplicates(subset=["coords"]).iterrows():
+					if not self.go:
+						break
+					if wp["wp_symbol"] == self.ship.waypoint:
+						continue
+
+					to = wp["GmCrd"]
+					print("going for path to", to)
+					# Navigation._log.setLevel(logging.DEBUG)
+					# assert self.follow_path(to), f"Error follow_path {str(self)}"
+					print(f"pathing finished {self.follow_path(to)}")
+					time.sleep(1)
+				print("Done") """
+				
+				while self.go:
+					time.sleep(1)
+
+				assert self.follow_path(self.GmCrd_dict["mine"]), f"Error follow_path {str(self)}"
 
 			# make wait if nothing happened (for some reason -> ?)
 			if self.go and start_ti+int(self.Objman.Conf.config["THREAD_TASK_INTERVAL"]) > int(time.time()):
 				time.sleep(self.Objman.Conf.config["THREAD_TASK_INTERVAL"])
 
 		# realease ship
-		self.ship.has_task = False
-		self.ship.task_id = None
-		self.ship._update_state()
-
-		# close open DB connections
-		if not self.Objman.Sqhlhan.ConnHandler.remove_thr_conns():
-			self.__class__._log.error(f"[{self.thr.name}] work failed closing all thread Connections to DB {short(self.Objman.Sqhlhan.dbfp)}")
-
-		if not finished:	
-			self.__class__._log.info(f"[{self.thr.name}] ended")
-		else:
-			self.__class__._log.info(f"[{self.thr.name}] finished")
+		self.end_work(finished)
 
 
 class MarketdataTask(Task):
@@ -438,7 +551,7 @@ class MarketdataTask(Task):
 
 			if len(self.GmCrd_dict["li_markets"]) == 0:
 				finished = True
-				continue
+				break
 						
 			# [0] is distance, [1] is GmCrd
 			coord = self.GmCrd_dict["li_markets"].pop(0)
@@ -466,15 +579,4 @@ class MarketdataTask(Task):
 				time.sleep(self.Objman.Conf.config["THREAD_TASK_INTERVAL"])
 
 		# realease ship
-		self.ship.has_task = False
-		self.ship.task_id = None
-		self.ship._update_state()
-
-		# close open DB connections
-		if not self.Objman.Sqhlhan.ConnHandler.remove_thr_conns():
-			self.__class__._log.error(f"[{self.thr.name}] work failed closing all thread Connections to DB {short(self.Objman.Sqhlhan.dbfp)}")
-
-		if not finished:	
-			self.__class__._log.info(f"[{self.thr.name}] ended")
-		else:
-			self.__class__._log.info(f"[{self.thr.name}] finished")
+		self.end_work(finished)

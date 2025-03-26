@@ -119,6 +119,15 @@ class Response:
 
 					break
 
+				# not found
+				elif self.invalid_reason == "not found":
+					self.__class__.timeout_until = int(time.time()) + 10
+					self.__class__._log.error(_log_helper_valid(self, "valid Error code 404 not found, case"))
+					self.attempts += 1
+					time.sleep(1.441)
+					self.reset_invalid_reason()
+					self.Response = Request(self.getter, self.url, data=self.data, headers=self.headers, jjs=self._form_atrib_dict()).run()
+
 				elif self.invalid_reason == "server":
 					max_attempts -= 1
 					self.attempts += 1
@@ -216,16 +225,23 @@ class Response:
 
 			return False
 
-		# forbidden status_code
+		# 4xx status_code
 		elif self.Response.status_code >= 400 and self.Response.status_code < 500:
 
-			# rate limited
+			# 429 rate limited
 			if self.Response.status_code == 429:
 				self.set_invalid_reason("ratelimit")
 				self.__class__._log.warning("valid code 429 rate limit reached")
 
 				return False
 
+			# 404 not found
+			elif self.Response.status_code == 404:
+				self.set_invalid_reason("not found")
+				self.__class__._log.error(_log_helper_valid(self, "valid Error code 404 not found, case"))
+
+				return False
+			
 			# 405 method not allowed
 			elif self.Response.status_code == 405:
 				self.set_invalid_reason("method not allowed")

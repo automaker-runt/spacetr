@@ -350,10 +350,19 @@ class Contract:
 
 				# good already in there, but unitsFulfilled needs update
 				elif good["tradeSymbol"] in (i[0] for i in DB_ctrct_goods_sym_fullf):
+					# prepare for DB columns and values
 					good_updt = {"quantity_fullf": good["unitsFulfilled"], "updated": int(time.time())}
+					
+					# need the goods_id from _goods to update the correct good in _contract_goods
+					goods_id = self.Objman.sel(f"SELECT id FROM _goods WHERE goods=?;", (good["tradeSymbol"],), _format=False)
+					if len(goods_id) == 0:
+						self.__class__._log.error("update_contract failed to find id in _goods for '{}'".format(good["tradeSymbol"]))
+
+						return False
+					
 					# update the good
-					if not self.Objman.updt(table="_contract_goods", cols=list(good_updt.keys()), vals=list(good_updt.values()), unique={"ctrct_id": re}):
-						self.__class__._log.error("update_contract failed to update '{}' for '{}' with unitsFulfilled '{}'".format(good["tradeSymbol"], re, good["unitsFulfilled"]))
+					if not self.Objman.updt(table="_contract_goods", cols=list(good_updt.keys()), vals=list(good_updt.values()), unique={"ctrct_id": self.sptr_id, "goods_id": goods_id[0][0]}):
+						self.__class__._log.error("update_contract failed to update '{}' for '{}' with unitsFulfilled '{}'".format(good["tradeSymbol"], self.sptr_id, good["unitsFulfilled"]))
 
 				else:
 					self.__class__._log.error("update_contract identified good '{}' that is not already in '_contract_goods'".format(good["tradeSymbol"]))
@@ -377,7 +386,8 @@ class Contract:
 
 
 	def accept_contract(self) -> bool:
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["ACCEPT_CONTRACT"].format(contractId=self.sptr_id)
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["POST"]["ACCEPT_CONTRACT"])
+		url = url.format(contractId=self.sptr_id)
 
 		suc, re = self.Objman.post(url=url)
 

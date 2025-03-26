@@ -1,3 +1,0 @@
-# sql utils for core
-
-

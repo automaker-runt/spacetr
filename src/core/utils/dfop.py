@@ -82,6 +82,23 @@ def nearest(df, coord):
 	return nearest_wp_dict["GmCrd"]
 
 
+def furthest(df, coord):
+    """
+    Returns the waypoint that is furthest from the given coordinate
+    
+    Args:
+        df: DataFrame containing waypoints with GmCrd column
+        coord: GameCoord object to measure distance from
+        
+    Returns:
+        GameCoord: furthest waypoint
+    """
+    df["dist_coord"] = df.apply(lambda x: distance(x.GmCrd, coord), axis=1)
+    furthest_wp_dict = df[df["dist_coord"] == df["dist_coord"].max()].to_dict(orient="records")[0]
+
+    return furthest_wp_dict["GmCrd"]
+
+
 def nearest_multiple(df, coords:list, new_col:str, amt:int=2, filter_same_coords:bool=True):
 	# coords is list of multiple GameCoord
 	# amt is dictating how many nearest should be looked for

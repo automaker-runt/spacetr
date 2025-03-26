@@ -490,7 +490,10 @@ class SqlHand:
 				else:
 					# get next best possible real_col and log it as INFO
 					li = [i for i in self.Scheme.schemes[table].columns if col in i]
-					real_col = next(li)
+					real_col = next(iter(li), None)
+					if real_col is None:
+						self.__class__._log.error(f"updt failed to find real_col for '{col}' in {table}")
+						return False
 					self.__class__._log.debug(f"updt guessed the real_col of '{col}' is '{real_col}' out of {li}")
 
 				cols[indx] = real_col
@@ -936,9 +939,11 @@ class SqlHand:
 		# creates new blank DB with same filename before renaming
 
 		self.close()
-		# rename old files with dbfp
-		if not rename.file(self.dbfp, dbfp):
+		# rename old files with dbfp (also shm and wal files)
+		if not rename.sqlite_files(self.dbfp, dbfp):
 			self.__class__._log.error(f"new_dbfp failed renaming {short(self.dbfp)}")
+
+			raise Exception("Failed creating new DB")
 
 		# create new DB file without number
 		self.__init__(self.Scheme, self.dbfp)

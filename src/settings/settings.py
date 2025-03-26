@@ -151,12 +151,16 @@ class Config:
 								"COPPER_ORE": [
 										"COMMON_METAL_DEPOSITS"
 								],
+								"IRON_ORE": [
+										"COMMON_METAL_DEPOSITS"
+								],
 								"ALUMINUM_ORE": [
 										"COMMON_METAL_DEPOSITS"
 								]
 						},
-						"HTTP_REPEAT_INVALIDATION": ("error", "method not allowed", "conflict"),
+						"HTTP_REPEAT_INVALIDATION": ("error", "method not allowed", "conflict", "not found"),
 						"MARKETDATA_CYCLE": 30,
+						"MINIMIZE_NAVIGATION_REQUESTS": False,
 						"NAVIGATION_MULTIPLIER": {
 													"CRUISE": 25,
 													"DRIFT": 250,
@@ -173,6 +177,7 @@ class Config:
 																"GO_ORBIT": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/orbit",
 																"GO_WAYPOINT": ["https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/navigate", {"waypointSymbol": "{WaypointSymbol}"}],
 																"REFUEL": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/refuel",
+																"REFUEL_AMT": ["https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/refuel", {"units": "{Units}", "fromCargo": "{fromCargo}"}],
 																"PURCHASE_SHIP": ["https://api.spacetraders.io/v2/my/ships", {"shipType": "{SHIP_TYPE}", "waypointSymbol": "{shipyardWaypointSymbol}"}],
 																"DOCK_SHIP": "https://api.spacetraders.io/v2/my/ships/{ShipSymbol}/dock",
 																"EXTRACT_ORES": "https://api.spacetraders.io/v2/my/ships/{miningShipSymbol}/extract",

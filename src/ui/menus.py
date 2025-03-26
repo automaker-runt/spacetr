@@ -5,6 +5,7 @@ from python_console_menu import AbstractMenu, MenuItem
 from typing import Union
 
 from core.logic import Core
+from core.sim.sim_navigation import SimulateNavigation
 from hkeep.log.logger import get_logger
 from ui.history import MenuHistory
 from ui.options import MenuOptions
@@ -148,6 +149,47 @@ class OptionsHTTPSubMenu(OwnAbstractMenu):
 		self.add_menu_item(MenuItem(3, "set POST data mode json", lambda: self._set_option("post_mode", "json")).set_as_exit_option())
 		self.add_menu_item(MenuItem(4, "set POST data mode urlencoded", lambda: self._set_option("post_mode", "data")).set_as_exit_option())
 
+
+class SimSubMenu(OwnAbstractMenu):
+	show_hidden_menu = False
+
+	def __init__(self, main_menu=None):
+		self.main_menu = main_menu
+		super().__init__("> spacetr > Simulate\n")
+
+	def initialise(self):
+		
+		self.add_menu_item(MenuItem(0, "back").set_as_exit_option())
+		self.add_menu_item(MenuItem(1, "Simulate Navigation", lambda: self.sim_navigation()))
+
+	def sim_navigation(self):
+		print()
+		
+		if len(self.main_menu.Mrkt_list) == 0:
+			print("Core thread not running")
+			return
+		
+		print("Simulating navigation")
+		
+		# Create simulator with main menu parameters if available
+		if self.main_menu:
+			simulator = SimulateNavigation(
+				session=self.main_menu.session,
+				Conf=self.main_menu.Conf,
+				SqlHan=self.main_menu.SqlHan,
+				Mrkt=self.main_menu.Mrkt_list[0],
+				events=self.main_menu.events,
+				wake_up_qs=self.main_menu.wake_up_qs,
+				threads=self.main_menu.threads
+			)
+		else:
+			print("Cannot run simulation without reference to main menu.")
+			return
+		
+		# Run the simulation
+		simulator.run_simulation()
+
+
 class OptionsSubMenu(OwnAbstractMenu):
 	show_hidden_menu = False
 
@@ -175,6 +217,7 @@ class ConfigSubMenu(OwnAbstractMenu):
 		self.add_menu_item(MenuItem(2, "Delete good to trait mapping", lambda: self.del_good_trait()))
 		self.add_menu_item(MenuItem(3, "Set FLIGHT_MODE_FRIGATES", lambda: self.set_config("FLIGHT_MODE_FRIGATES")))
 		self.add_menu_item(MenuItem(4, "Set MARKETDATA_CYCLE", lambda: self.set_config("MARKETDATA_CYCLE", value_type="int")))
+		self.add_menu_item(MenuItem(5, "Set MINIMIZE_NAVIGATION_REQUESTS", lambda: self.set_config("MINIMIZE_NAVIGATION_REQUESTS", value_type="bool")))
 
 
 	def set_good_trait(self):
@@ -229,7 +272,8 @@ class ConfigSubMenu(OwnAbstractMenu):
 			self.Conf.config[key] = int(new_set)
 		elif value_type == "list":
 			self.Conf.config[key] = [new_set]
-
+		elif value_type == "bool":
+			self.Conf.config[key] = True if new_set.lower() == "true" else False
 		print(f"> Set '{key}: {self.Conf.config[key]}'")
 
 
@@ -294,10 +338,13 @@ class Menu(OwnAbstractMenu):
 		self.events = events
 		self.wake_up_qs = wake_up_qs
 		self.threads = threads
-
 		self.core_thread_ev = None
+		self.core_thread = None
+		self.Mrkt_list = list()
 
 		self.ShipHan = None
+		self.recalibrate_ships_info_ev = threading.Event()
+
 
 		super().__init__("> spacetr\n")
 
@@ -309,8 +356,10 @@ class Menu(OwnAbstractMenu):
 		self.add_menu_item(MenuItem(2, "POST", lambda: self._sess_post()))
 		self.add_menu_item(MenuItem(3, "Deploy Core logic", lambda: self._init_Core()))
 		self.add_menu_item(MenuItem(4, "End Core logic", lambda: self._stop_Core()))
-		self.add_menu_item(MenuItem(5, "Config", menu=ConfigSubMenu(self.Conf)))
-		self.add_menu_item(MenuItem(6, "Options", menu=OptionsSubMenu()))
+		self.add_menu_item(MenuItem(5, "Calibrate ships info", lambda: self._recalibrate_ships_info()))
+		self.add_menu_item(MenuItem(6, "Config", menu=ConfigSubMenu(self.Conf)))
+		self.add_menu_item(MenuItem(7, "Simulate", menu=SimSubMenu(self)))
+		self.add_menu_item(MenuItem(9, "Options", menu=OptionsSubMenu()))
 		# self.add_menu_item(MenuItem(2, "Show hidden menu item", lambda: self.__should_show_hidden_menu__()))
 		# self.add_hidden_menu_item(MenuItem(3, "Hidden menu item", lambda: print("I was a hidden menu item")))
 
@@ -320,20 +369,44 @@ class Menu(OwnAbstractMenu):
 									args=(self.session,
 											self.Conf,
 											self.SqlHan,
+											self.Mrkt_list,
 											self.core_thread_ev,
 											self.events,
 											self.wake_up_qs,
-											self.threads),
+											self.threads,
+											self.recalibrate_ships_info_ev),
 									name="t_core")
 		self.threads.append(core_thr)
 		self.events.append(self.core_thread_ev)
-
+		self.core_thread = core_thr
 		core_thr.start()
 
 	
 	def _stop_Core(self):
 		if self.core_thread_ev is not None:	
 			self.core_thread_ev.set()
+			self.core_thread.join(timeout=7)
+			self.Mrkt_list.clear()
+			self.core_thread = None
+			self.core_thread_ev = None
+	
+	
+	def _test_navigation(self):
+		print()
+
+		if self.core_thread is None or len(self.Mrkt_list) == 0:
+			print("Core thread not running")
+			return
+
+		try:	
+			print(self.Mrkt_list[0].df)
+		except:
+			pass
+
+	
+	def _recalibrate_ships_info(self):
+		if not self.recalibrate_ships_info_ev.is_set():
+			self.recalibrate_ships_info_ev.set()
 
 	
 	def _sess_get(self, **kwargs):
@@ -358,6 +431,7 @@ class Menu(OwnAbstractMenu):
 					self.get_history.add(url)
 				print(json.dumps(json.loads(l), indent=4))
 
+	
 	def _sess_post(self, **kwargs):
 		conti = True
 		data = None

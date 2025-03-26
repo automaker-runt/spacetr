@@ -1,5 +1,5 @@
 # shiphandler
-import json, time
+import json, time, copy
 import pandas as pd
 from functools import partial
 from typing import Union
@@ -125,7 +125,7 @@ class ShipHandler:
 	def api_get_ships(self, pages:bool=True) -> Union[None, int, list]:
 		# returns int/None, list
 		# int would be the number of total ships, if None, then len(list) gives total
-		url = self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["SHIPS_INFO"]
+		url = copy.deepcopy(self.Objman.Conf.config["sites"]["SPACETRADERS"]["GET"]["SHIPS_INFO"])
 		suc, re = self.Objman.get(url=url)
 
 		if not suc:
@@ -172,23 +172,3 @@ class ShipHandler:
 		pass
 		# query from inventory after self.update_ships() which one is nearest to coord
 		# also query according to ship_type
-
-	def ship_journey(self, Ship, coord:coord.GameCoord) -> Union[bool, list]:
-		pass
-
-		# check if we can refuel here
-		if self.refuel_here():
-			# check if in range after refuelling here and reducing reserve to 3%
-			if (self.fuel < self.fuelCapacity and
-				self.in_range(coord, mode=mode, current_fuel=self.fuelCapacity, reserve=0.03)):
-			
-				self.refuel()
-
-			# we can refuel here, but capacity not enough to go there
-			else:
-				return False
-
-		# fuel at max capacity, or even if refueled
-		# too far away
-		else:
-			return False

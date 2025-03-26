@@ -15,26 +15,24 @@ from utils.time import ISO_to_epoch
 class Market:
 
 	_log = get_logger(__name__)
+	warned_no_DB_trades = False
 
 	@classmethod
 	def get_marketdata(cls, Objman:ObjManager) -> pd.core.frame.DataFrame:
 		# can only get it from DB
 		# TODO rewrite it for DISTINCT wp_symbol, side, good
-		com = """SELECT market.id, wp_symbol, side, goods, quantity, price, agents.name, discovery, market.updated 
-					FROM market 
-					LEFT JOIN waypoints ON waypoints_id = waypoints.id 
-					LEFT JOIN agents ON maker_id = agents.id;""".replace('\n', ' ').replace('\t', '')
+		com = "SELECT * FROM market_avail_view;"
 
 		re = Objman.sel(com, _format=False)
 
-		cols = ["id", "waypoint", "side", "good", "quantity", "price", "maker", "discovery", "updated"]
+		cols = ["id", "waypoint", "coords", "side", "good", "quantity", "price", "maker", "discovery", "updated"]
 
 		if len(re) == 0:
 			cls._log.warning("no marketdata found in DB")
 
 			return pd.DataFrame(columns=cols)
 
-		return pd.DataFrame(re, columns=cols).drop_duplicates(["waypoint", "side", "good", "maker"], keep="last")
+		return pd.DataFrame(re, columns=cols)
 
 
 	@classmethod
@@ -47,7 +45,11 @@ class Market:
 		cols = ["id", "trade_time", "waypoint", "side", "good", "quantity", "price", "volume", "taker", "maker", "net_profit", "updated"]
 
 		if len(re) == 0:
-			cls._log.warning("no trade history found in DB")
+			if not cls.warned_no_DB_trades:
+				cls.warned_no_DB_trades = True
+				cls._log.warning("no trade history found in DB")
+			else:
+				cls._log.debug("no trade history found in DB")
 
 			return pd.DataFrame(columns=cols)
 
@@ -147,7 +149,7 @@ class Market:
 			entry = {
 						"trade_time": ISO_to_epoch(trade["timestamp"]),
 						"waypoints_id": Waypoint.get_wp_id(self.Objman, trade["waypointSymbol"]),
-						"side": 0 if trade["type"]=="BUY" else 1,
+						"side": 0 if trade["type"]=="PURCHASE" else 1,
 						"goods": trade["tradeSymbol"],
 						"quantity": trade["units"],
 						"price": trade["pricePerUnit"],
@@ -157,7 +159,11 @@ class Market:
 						"net_profit": None
 			}
 
-			where, sel_dict = create.dict_sql_sel(list(entry.keys()), list(entry.values()))
+			# because net_profit cases of None, SELECT will fail
+			# need to remove it from the dict
+			sel_dict = copy.deepcopy(entry)
+			sel_dict.pop("net_profit")
+			where, sel_dict = create.dict_sql_sel(list(sel_dict.keys()), list(sel_dict.values()))
 			com = f"SELECT trades.id,{strings.get_str_sql_sel_cols(entry)} FROM trades WHERE {where};"
 			com_vals = tuple(sel_dict.values())
 

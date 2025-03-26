@@ -18,7 +18,7 @@ from hkeep.log.qhand import QHand
 from netw.httpsession import HttpSession
 from netw.request import Request
 from settings import settings
-from ui import menus, options, history
+from ui import menus, history
 from utils.sql.scheme import Schemers
 from utils.strings.format import Formatter, DeFormatter
 from utils.strings.shorten import short
@@ -142,9 +142,9 @@ def thr_sql_log(Sql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, name:str=
 
 		raise E
 
-	finally:	
-		if Sql_h.ConnHandler.conns["main1"].open_status:
-			Sql_h.ConnHandler.conns["main1"].close_DB()
+	finally:
+		if not Sql_h.ConnHandler.remove_thr_conns():
+			log.error(f"[{name}] failed to remove thread connections to DB {short(Sql_h.dbfp)}")
 
 
 def thr_sql_netmsg(netSql_h:SqlHand, ev_quit:threading.Event, q:queue.Queue, name:str="t_sql_netmsg"):
@@ -239,13 +239,12 @@ def main():
 	t_sql_netmsg.start()
 
 	NetwSession = HttpSession()
-	NetwSession.set_ratelimiter(2)
+	NetwSession.set_ratelimiter(per_sec=2)
 	NetwSession.set_auth_header(header=BEARER["AGENT"], host="spacetraders.io")
 	NetwSession.set_auth_header(header=BEARER["ACCOUNT"], host="https://api.spacetraders.io/v2/register")
 
 	UI_G_History = history.MenuHistory(list(Config.config["sites"]["SPACETRADERS"]["GET"].values()), "get")
 	UI_P_History = history.MenuHistory(list(Config.config["sites"]["SPACETRADERS"]["POST"].values()), "post")
-	UIOptions = options.MenuOptions({"lib": "req"})
 
 	MainMenu = menus.Menu(NetwSession,
 				Config,
@@ -277,8 +276,8 @@ def main():
 
 	shutdown([ev_t_sql_log_end], [sQ], flag=False)
 	SptrSH.close()
-	SH.close()
 	t_sql_log.join()
+	SH.close()
 
 
 if __name__ == "__main__":

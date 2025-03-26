@@ -7,9 +7,7 @@ from typing import Union
 from hkeep.error import tb
 from hkeep.log.logger import get_logger
 from netw.ratelimiter import RateLimiter
-from netw.request import Request
 from netw.response import Response
-from settings.settings import Config
 from utils.os_type import OS
 from utils.strings.xxhash import hash
 from version import __version__
@@ -20,7 +18,7 @@ class HttpSession:
 	Config = None
 	_log = get_logger(__name__)
 
-	HTTP_REPEAT_INVALIDATION = ("error", "method not allowed", "conflict")
+	HTTP_REPEAT_INVALIDATION = ("error", "method not allowed", "conflict", "not found")
 	MAX_ATTEMPT_LIB = 2
 	MAX_ATTEMPT_SESS = 2
 	sessr_num = 0
@@ -29,7 +27,8 @@ class HttpSession:
 
 
 	@classmethod
-	def setConfig(cls, Conf:Config) -> None:
+	def setConfig(cls, Conf) -> None:
+		# Conf is a Config object
 		cls.Config = Conf
 		if "DEFAULT_SESSION_MAX_ATTEMPT_LIB" in cls.Config.config:
 			cls.MAX_ATTEMPT_LIB = cls.Config.config["DEFAULT_SESSION_MAX_ATTEMPT_LIB"]
